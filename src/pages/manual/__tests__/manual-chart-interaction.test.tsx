@@ -62,6 +62,20 @@ const buttonByText = (tree: ReactTestRenderer, text: string): ReactTestInstance 
   .findAllByType('button')
   .filter(button => button.children.join('').indexOf(text) !== -1)[0]
 
+const renderedText = (instance: any): string => {
+  if (typeof instance === 'string' || typeof instance === 'number') {
+    return String(instance)
+  }
+  if (!instance || !instance.children) {
+    return ''
+  }
+  return instance.children.map(renderedText).join('')
+}
+
+const invalidChartPoints = (tree: ReactTestRenderer): ReactTestInstance[] => tree.root.findAllByType('g').filter(point =>
+  point.props.role === 'img' && String(point.props['aria-label']).indexOf('校验提示') >= 0
+)
+
 describe('manual chart date selection', () => {
   it('asks before resolving overlapping 2025-11-10 and 2025-11-11 markers, then preserves signal editing', () => {
     const tree = renderer.create(<ManualBacktestPage />)
@@ -199,6 +213,105 @@ describe('manual chart date selection', () => {
     expect(buttonByText(tree, '添加买入点').props.disabled).toBe(false)
     buttonByText(tree, '添加买入点').props.onClick()
     expect(page.state.signals.map((signal: any) => [signal.date, signal.type])).toEqual([['2025-11-11', 'buy']])
+
+    tree.unmount()
+  })
+})
+
+describe('manual sequence validation feedback', () => {
+  it('revalidates after add, remove, and undo while matching the point list to chart markers', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const quotes = [
+      { date: '2024-01-02', val: 1.02 },
+      { date: '2024-01-03', val: 1.03 }
+    ]
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-02', endDate: '2024-01-31' },
+      quotes,
+      signals: [],
+      selectedDate: '2024-01-02',
+      chartDateChoices: [],
+      selectedSignalId: null,
+      nextSignalId: 1,
+      undo: null
+    })
+
+    expect(renderedText(tree.root)).toContain('买卖信号序列校验通过')
+    expect(renderedText(tree.root)).toContain('尚无回测执行入口')
+
+    buttonByText(tree, '添加卖出点').props.onClick()
+    expect(renderedText(tree.root)).toContain('空仓')
+    expect(JSON.stringify(tree.toJSON())).toContain('不能在没有对应买入持仓时卖出')
+    expect(invalidChartPoints(tree)).toHaveLength(1)
+
+    buttonByText(tree, '移除').props.onClick({ stopPropagation: jest.fn() })
+    expect(renderedText(tree.root)).toContain('买卖信号序列校验通过')
+    expect(invalidChartPoints(tree)).toHaveLength(0)
+
+    buttonByText(tree, '撤销最近一次点位操作').props.onClick()
+    expect(renderedText(tree.root)).toContain('空仓')
+    expect(invalidChartPoints(tree)).toHaveLength(1)
+
+    tree.unmount()
+  })
+
+  it('rejects same-day opposing signals and marks both list rows and chart markers with the reason', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const quotes = [{ date: '2024-01-02', val: 1.02 }]
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-02', endDate: '2024-01-31' },
+      quotes,
+      signals: [],
+      selectedDate: '2024-01-02',
+      chartDateChoices: [],
+      selectedSignalId: null,
+      nextSignalId: 1,
+      undo: null
+    })
+
+    buttonByText(tree, '添加买入点').props.onClick()
+    buttonByText(tree, '添加卖出点').props.onClick()
+
+    const text = renderedText(tree.root)
+    expect(text).toContain('需要处理的序列问题')
+    expect(text).toContain('系统不会猜测先后顺序')
+    expect(text).toContain('请调整信号日期或移除其中一个信号')
+    expect(text).not.toContain('买卖信号序列校验通过')
+    expect(invalidChartPoints(tree)).toHaveLength(2)
+    expect(page.getSequenceValidation().standardizedSequence).toBeNull()
+
+    tree.unmount()
+  })
+
+  it('shows an end-of-range open position as valid and unvalued in the summary, list, and chart label', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const quotes = [
+      { date: '2024-01-02', val: 1.02 },
+      { date: '2024-01-03', val: 1.03 }
+    ]
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-02', endDate: '2024-01-31' },
+      quotes,
+      signals: [{ id: 1, date: '2024-01-02', type: 'buy' }],
+      selectedDate: '2024-01-02',
+      chartDateChoices: [],
+      selectedSignalId: null,
+      nextSignalId: 2,
+      undo: null
+    })
+
+    const text = renderedText(tree.root)
+    expect(text).toContain('买卖信号序列校验通过')
+    expect(text).toContain('1 笔持仓仍未平仓')
+    expect(text).toContain('这里只输出未平仓状态，不计算或声称期末估值')
+    expect(text).toContain('期末未平仓（尚未估值）')
+    expect(page.getSequenceValidation().standardizedSequence.endingPositionStatus).toBe('open')
+    expect(tree.root.findAllByType('g').some(group =>
+      group.props.role === 'img' && String(group.props['aria-label']).includes('期末未平仓且尚未估值')
+    )).toBe(true)
 
     tree.unmount()
   })

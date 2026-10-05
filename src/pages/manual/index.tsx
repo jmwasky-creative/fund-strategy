@@ -16,7 +16,10 @@ import {
   ManualQuote,
   ManualSignal,
   ManualSignalType,
-  sortManualSignals
+  ManualSequenceIssue,
+  ManualSequenceValidation,
+  sortManualSignals,
+  validateManualSignalSequence
 } from './manual-model'
 import {
   getManualChartHitCandidates,
@@ -109,6 +112,30 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     if (this.searchTimeout) {
       clearTimeout(this.searchTimeout)
     }
+  }
+
+  private getSequenceValidation = (): ManualSequenceValidation => validateManualSignalSequence(
+    this.state.signals,
+    this.state.activeQuery ? this.state.activeQuery.endDate : undefined
+  )
+
+  private getSignalIssuesById = (validation: ManualSequenceValidation): { [key: number]: ManualSequenceIssue[] } => {
+    const issuesBySignalId: { [key: number]: ManualSequenceIssue[] } = {}
+    validation.issues.forEach(issue => {
+      issuesBySignalId[issue.signalId] = (issuesBySignalId[issue.signalId] || []).concat(issue)
+    })
+    return issuesBySignalId
+  }
+
+  private getOpenSignalIds = (validation: ManualSequenceValidation): Set<number> => {
+    const openSignalIds = new Set<number>()
+    const sequence = validation.standardizedSequence
+    if (sequence) {
+      sequence.trades.filter(trade => trade.status === 'open').forEach(trade => {
+        openSignalIds.add(trade.entrySignal.id)
+      })
+    }
+    return openSignalIds
   }
 
   private searchFunds = async (query: string, version: number) => {
@@ -373,6 +400,9 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     signals.forEach(signal => {
       signalsByDate[signal.date] = (signalsByDate[signal.date] || []).concat(signal)
     })
+    const sequenceValidation = this.getSequenceValidation()
+    const issuesBySignalId = this.getSignalIssuesById(sequenceValidation)
+    const openSignalIds = this.getOpenSignalIds(sequenceValidation)
 
     return <div className={styles.chartWrap}>
       <svg
@@ -397,13 +427,25 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
             {dateSignals.map((signal, index) => {
               const offset = (index - (dateSignals.length - 1) / 2) * 15
               const markerY = Math.max(18, point.y - 20)
-              return <g key={signal.id} aria-hidden="true">
+              const signalIssues = issuesBySignalId[signal.id] || []
+              const issueLabel = signalIssues.length > 0
+                ? `；校验提示：${signalIssues.map(issue => issue.message).join('；')}`
+                : openSignalIds.has(signal.id)
+                  ? '；序列校验通过，期末未平仓且尚未估值'
+                  : '；序列校验通过'
+              return <g
+                key={signal.id}
+                role="img"
+                aria-label={`${signal.date} ${signal.type === 'buy' ? '买入' : '卖出'}点${issueLabel}`}
+              >
                 <circle
                   cx={point.x + offset}
                   cy={markerY}
                   r={8}
                   fill={signal.type === 'buy' ? '#237804' : '#cf1322'}
-                  className={styles.signalMarker}
+                  className={signalIssues.length > 0
+                    ? `${styles.signalMarker} ${styles.invalidSignalMarker}`
+                    : styles.signalMarker}
                 />
                 <text x={point.x + offset} y={markerY + 3} textAnchor="middle" className={styles.signalMarkerText}>
                   {signal.type === 'buy' ? '买' : '卖'}
@@ -437,6 +479,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         <span><i className={styles.buyLegend} />买入点</span>
         <span><i className={styles.sellLegend} />卖出点</span>
         <span>图上重叠点会先显示候选日期；也可用下方选项精确选择实际净值交易日。</span>
+        <span>红色描边点位存在校验问题或待确认规则；详情见清单。</span>
       </div>
       {selectedSignalId !== null
         ? <span className={styles.srOnly}>当前选中点位编号 {selectedSignalId}</span>
@@ -465,6 +508,17 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     } = this.state
     const orderedSignals = sortManualSignals(signals)
     const selectedQuote = quotes.filter(item => item.date === selectedDate)[0]
+    const sequenceValidation = this.getSequenceValidation()
+    const issuesBySignalId = this.getSignalIssuesById(sequenceValidation)
+    const openSignalIds = this.getOpenSignalIds(sequenceValidation)
+    const openTradeCount = sequenceValidation.standardizedSequence
+      ? sequenceValidation.standardizedSequence.trades.filter(trade => trade.status === 'open').length
+      : 0
+    const validSequenceDescription = signals.length === 0
+      ? '当前没有点位；添加、移除或撤销后会自动重新校验。'
+      : openTradeCount > 0
+        ? `信号序列合法；${openTradeCount} 笔持仓仍未平仓。这里只输出未平仓状态，不计算或声称期末估值；估值由独立回测引擎范围处理。`
+        : '当前点位符合多头单持仓顺序约束。'
 
     return <main className={styles.workspace}>
       <header className={styles.intro}>
@@ -524,6 +578,20 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       {!loading && activeQuery && quotes.length === 0
         ? <Alert className={styles.feedback} type="info" showIcon message="所选范围暂无可显示的净值" description="请检查基金代码或扩大日期范围后重试。" />
         : null}
+      {activeQuery && !loading ? <div className={styles.validationSummary} role="status" aria-live="polite">
+        <Alert
+          className={styles.validationAlert}
+          type={sequenceValidation.isValid ? 'success' : 'error'}
+          showIcon
+          message={sequenceValidation.isValid
+            ? '买卖信号序列校验通过'
+            : `有 ${sequenceValidation.issues.length} 个需要处理的序列问题`}
+          description={sequenceValidation.isValid
+            ? validSequenceDescription
+            : '请按清单中的具体提示修正。点位不会被自动丢弃或重排；同日相反信号必须由用户调整，系统不会猜测顺序。'}
+        />
+        <p className={styles.engineNotice}>当前手动工作区尚无回测执行入口；本次只校验信号顺序，不会启动交易计算或发送真实订单。</p>
+      </div> : null}
 
       {quotes.length > 0 ? <div className={styles.workspaceGrid}>
         <Card title="历史单位净值" className={styles.chartCard}>
@@ -570,22 +638,37 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
             ? <p className={styles.emptyList}>尚未添加手动买卖点。先从图上选择一个实际净值日期，再添加信号。</p>
             : <div className={styles.tableWrap}>
               <table className={styles.signalTable}>
-                <thead><tr><th>信号</th><th>日期</th><th>操作</th></tr></thead>
+                <thead><tr><th>信号</th><th>日期</th><th>校验提示</th><th>操作</th></tr></thead>
                 <tbody>
-                  {orderedSignals.map(signal => <tr
-                    key={signal.id}
-                    className={selectedSignalId === signal.id ? styles.selectedRow : ''}
-                    onClick={() => this.selectSignal(signal)}
-                    aria-selected={selectedSignalId === signal.id}
-                  >
-                    <td><span className={signal.type === 'buy' ? styles.buyType : styles.sellType}>{signal.type === 'buy' ? '买入' : '卖出'}</span></td>
-                    <td>{signal.date}</td>
-                    <td><Button size="small" onClick={event => this.removeSignal(signal.id, event)}>移除</Button></td>
-                  </tr>)}
+                  {orderedSignals.map(signal => {
+                    const signalIssues = issuesBySignalId[signal.id] || []
+                    const rowClass = [
+                      selectedSignalId === signal.id ? styles.selectedRow : '',
+                      signalIssues.length > 0 ? styles.invalidSignalRow : ''
+                    ].filter(Boolean).join(' ')
+                    return <tr
+                      key={signal.id}
+                      className={rowClass}
+                      onClick={() => this.selectSignal(signal)}
+                      aria-selected={selectedSignalId === signal.id}
+                      aria-describedby={signalIssues.length > 0 ? `signal-validation-${signal.id}` : undefined}
+                    >
+                      <td><span className={signal.type === 'buy' ? styles.buyType : styles.sellType}>{signal.type === 'buy' ? '买入' : '卖出'}</span></td>
+                      <td>{signal.date}</td>
+                      <td>
+                        {signalIssues.length > 0
+                          ? <ul id={`signal-validation-${signal.id}`} className={styles.validationIssueList}>
+                            {signalIssues.map(issue => <li key={issue.code} className={styles.validationIssue}>{issue.message}</li>)}
+                          </ul>
+                          : <span className={styles.validSignal}>{openSignalIds.has(signal.id) ? '期末未平仓（尚未估值）' : '序列有效'}</span>}
+                      </td>
+                      <td><Button size="small" onClick={event => this.removeSignal(signal.id, event)}>移除</Button></td>
+                    </tr>
+                  })}
                 </tbody>
               </table>
             </div>}
-          <p className={styles.disclaimer}>此清单只记录本地手动回测输入；不校验交易序列，不提交任何真实订单。</p>
+          <p className={styles.disclaimer}>此清单只记录本地手动回测输入；校验仅检查信号顺序，不执行回测或提交任何真实订单。</p>
         </Card>
       </div> : null}
 

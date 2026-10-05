@@ -73,6 +73,21 @@
   margin: 16px 0;
 }
 
+.validationSummary {
+  margin: 16px 0 0;
+}
+
+.validationAlert {
+  margin: 0;
+}
+
+.engineNotice {
+  margin: 8px 0 0;
+  color: #697586;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .loading {
   padding: 44px 0;
   text-align: center;
@@ -154,6 +169,11 @@
   stroke: #fff;
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
+}
+
+.invalidSignalMarker {
+  stroke: #a8071a;
+  stroke-width: 3;
 }
 
 .signalMarkerText {
@@ -270,6 +290,32 @@
 .signalTable tbody tr:hover,
 .selectedRow {
   background: #f1f5ff;
+}
+
+.invalidSignalRow {
+  background: #fff2f0;
+}
+
+.signalTable td:nth-child(3) {
+  min-width: 190px;
+  white-space: normal;
+}
+
+.validationIssueList {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.validationIssue {
+  color: #a8071a;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+}
+
+.validSignal {
+  color: #237804;
+  font-size: 12px;
 }
 
 .buyType {

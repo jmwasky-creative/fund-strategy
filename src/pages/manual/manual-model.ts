@@ -11,6 +11,37 @@ export interface ManualSignal {
   type: ManualSignalType
 }
 
+export type ManualSequenceIssueCode =
+  | 'sell-while-flat'
+  | 'buy-while-holding'
+  | 'same-day-opposite-signals'
+  | 'state-unknown-after-ambiguous-day'
+
+export interface ManualSequenceIssue {
+  signalId: number
+  code: ManualSequenceIssueCode
+  message: string
+}
+
+export interface ManualSequenceValidation {
+  isValid: boolean
+  issues: ManualSequenceIssue[]
+  standardizedSequence: StandardManualSequence | null
+}
+
+export interface StandardManualTrade {
+  entrySignal: ManualSignal
+  exitSignal: ManualSignal | null
+  status: 'closed' | 'open'
+}
+
+/** Validated signal pairs only; this contract contains no fills or valuation. */
+export interface StandardManualSequence {
+  trades: StandardManualTrade[]
+  endingPositionStatus: 'flat' | 'open'
+  endDate: string | null
+}
+
 export interface ManualQuery {
   fundCode: string
   startDate: string
@@ -21,6 +52,84 @@ export interface ManualQuery {
 export const sortManualSignals = (signals: ManualSignal[]): ManualSignal[] => signals
   .slice()
   .sort((left, right) => left.date.localeCompare(right.date) || left.id - right.id)
+
+/**
+ * Validate a long-only, single-open-position signal sequence without changing its input.
+ * Opposing signals on one day are rejected; an open position at the end is valid and explicit.
+ */
+export const validateManualSignalSequence = (
+  signals: ManualSignal[],
+  endDate?: string
+): ManualSequenceValidation => {
+  const orderedSignals = sortManualSignals(signals)
+  const issues: ManualSequenceIssue[] = []
+  const trades: StandardManualTrade[] = []
+  let openSignal: ManualSignal | null = null
+  let index = 0
+
+  while (index < orderedSignals.length) {
+    const date = orderedSignals[index].date
+    const dateSignals: ManualSignal[] = []
+    while (index < orderedSignals.length && orderedSignals[index].date === date) {
+      dateSignals.push(orderedSignals[index])
+      index += 1
+    }
+
+    const hasBuy = dateSignals.some(signal => signal.type === 'buy')
+    const hasSell = dateSignals.some(signal => signal.type === 'sell')
+    if (hasBuy && hasSell) {
+      dateSignals.forEach(signal => issues.push({
+        signalId: signal.id,
+        code: 'same-day-opposite-signals',
+        message: `${date} 同一日期同时存在买入和卖出信号；系统不会猜测先后顺序。请调整信号日期或移除其中一个信号后再校验。`
+      }))
+      orderedSignals.slice(index).forEach(signal => issues.push({
+        signalId: signal.id,
+        code: 'state-unknown-after-ambiguous-day',
+        message: `${date} 的买入和卖出信号尚未调整，无法判断 ${signal.date} 此点位发生时的持仓状态；请先处理该同日冲突。`
+      }))
+      break
+    }
+
+    dateSignals.forEach(signal => {
+      if (signal.type === 'buy') {
+        if (openSignal) {
+          issues.push({
+            signalId: signal.id,
+            code: 'buy-while-holding',
+            message: `买入点 ${signal.date} 时已有未平仓多头；首版不支持重复买入或加仓。`
+          })
+        } else {
+          openSignal = signal
+        }
+      } else if (!openSignal) {
+        issues.push({
+          signalId: signal.id,
+          code: 'sell-while-flat',
+          message: `卖出点 ${signal.date} 发生时为空仓；不能在没有对应买入持仓时卖出。`
+        })
+      } else {
+        trades.push({ entrySignal: openSignal, exitSignal: signal, status: 'closed' })
+        openSignal = null
+      }
+    })
+  }
+
+  if (!issues.length && openSignal) {
+    trades.push({ entrySignal: openSignal, exitSignal: null, status: 'open' })
+  }
+
+  const isValid = issues.length === 0
+  return {
+    isValid,
+    issues,
+    standardizedSequence: isValid ? {
+      trades,
+      endingPositionStatus: openSignal ? 'open' : 'flat',
+      endDate: endDate || null
+    } : null
+  }
+}
 
 /** Filter and sort provider history without substituting a nearby date for a missing date. */
 export const filterManualQuotes = (
