@@ -18,7 +18,16 @@ import {
   ManualSignalType,
   sortManualSignals
 } from './manual-model'
-import { getManualChartHitCandidates, MANUAL_CHART_LAYOUT, plotManualHistory } from './manual-chart-model'
+import {
+  getManualChartHitCandidates,
+  MANUAL_CHART_LAYOUT,
+  MANUAL_CHART_POINT_RADIUS,
+  MANUAL_CHART_POINT_STROKE_WIDTH,
+  MANUAL_CHART_SELECTED_POINT_RADIUS,
+  MANUAL_CHART_SELECTED_RING_RADIUS,
+  MANUAL_CHART_SELECTED_RING_STROKE_WIDTH,
+  plotManualHistory
+} from './manual-chart-model'
 import styles from './index.css'
 
 const { Option } = Select
@@ -269,10 +278,18 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     pointer.x = event.clientX
     pointer.y = event.clientY
     const chartPoint = pointer.matrixTransform(screenMatrix.inverse())
+    const screenScaleX = Math.sqrt(screenMatrix.a * screenMatrix.a + screenMatrix.b * screenMatrix.b)
+    const screenScaleY = Math.sqrt(screenMatrix.c * screenMatrix.c + screenMatrix.d * screenMatrix.d)
+    const minScreenScale = Math.min(screenScaleX, screenScaleY)
+    const viewBoxUnitsPerScreenPixel = Number.isFinite(minScreenScale) && minScreenScale > 0
+      ? 1 / minScreenScale
+      : 1
     const candidates = getManualChartHitCandidates(
       plotManualHistory(this.state.quotes),
       chartPoint.x,
-      chartPoint.y
+      chartPoint.y,
+      this.state.selectedDate,
+      viewBoxUnitsPerScreenPixel
     )
 
     if (candidates.length === 1) {
@@ -393,11 +410,18 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
                 </text>
               </g>
             })}
-            {isSelected ? <circle cx={point.x} cy={point.y} r={9} className={styles.selectedRing} /> : null}
+            {isSelected ? <circle
+              cx={point.x}
+              cy={point.y}
+              r={MANUAL_CHART_SELECTED_RING_RADIUS}
+              strokeWidth={MANUAL_CHART_SELECTED_RING_STROKE_WIDTH}
+              className={styles.selectedRing}
+            /> : null}
             <circle
               cx={point.x}
               cy={point.y}
-              r={isSelected ? 5 : 3.5}
+              r={isSelected ? MANUAL_CHART_SELECTED_POINT_RADIUS : MANUAL_CHART_POINT_RADIUS}
+              strokeWidth={MANUAL_CHART_POINT_STROKE_WIDTH}
               className={styles.quotePoint}
               role="button"
               tabIndex={0}

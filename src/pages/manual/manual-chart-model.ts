@@ -14,9 +14,15 @@ export const MANUAL_CHART_LAYOUT = {
   plotBottom: 258
 }
 
-// The visible marker radius is 3.5 viewBox units, plus its 1.5-unit stroke.
-// A 5-unit hit radius intentionally detects overlapping neighboring targets.
+// A 5-unit base radius intentionally detects overlapping neighboring targets.
+// Candidate radii also include visible vector-effect strokes, converted from screen pixels.
 export const MANUAL_CHART_HIT_RADIUS = 5
+export const MANUAL_CHART_POINT_RADIUS = 3.5
+export const MANUAL_CHART_POINT_STROKE_WIDTH = 1.5
+export const MANUAL_CHART_FOCUSED_POINT_STROKE_WIDTH = 2.5
+export const MANUAL_CHART_SELECTED_POINT_RADIUS = 5
+export const MANUAL_CHART_SELECTED_RING_RADIUS = 9
+export const MANUAL_CHART_SELECTED_RING_STROKE_WIDTH = 2
 
 export const plotManualHistory = (quotes: ManualQuote[]): ManualPlotPoint[] => {
   if (quotes.length === 0) {
@@ -48,17 +54,31 @@ export const plotManualHistory = (quotes: ManualQuote[]): ManualPlotPoint[] => {
 export const getManualChartHitCandidates = (
   points: ManualPlotPoint[],
   x: number,
-  y: number
+  y: number,
+  selectedDate: string = '',
+  viewBoxUnitsPerScreenPixel: number = 1
 ): ManualPlotPoint[] => {
-  const maxDistanceSquared = MANUAL_CHART_HIT_RADIUS * MANUAL_CHART_HIT_RADIUS
+  const safeViewBoxUnitsPerScreenPixel = Number.isFinite(viewBoxUnitsPerScreenPixel) && viewBoxUnitsPerScreenPixel > 0
+    ? viewBoxUnitsPerScreenPixel
+    : 1
 
   return points
     .map((point, index) => ({
       point,
       index,
-      distanceSquared: (point.x - x) * (point.x - x) + (point.y - y) * (point.y - y)
+      distanceSquared: (point.x - x) * (point.x - x) + (point.y - y) * (point.y - y),
+      hitRadius: Math.max(
+        MANUAL_CHART_HIT_RADIUS,
+        MANUAL_CHART_POINT_RADIUS + MANUAL_CHART_FOCUSED_POINT_STROKE_WIDTH / 2 * safeViewBoxUnitsPerScreenPixel,
+        point.date === selectedDate
+          ? Math.max(
+            MANUAL_CHART_SELECTED_POINT_RADIUS + MANUAL_CHART_FOCUSED_POINT_STROKE_WIDTH / 2 * safeViewBoxUnitsPerScreenPixel,
+            MANUAL_CHART_SELECTED_RING_RADIUS + MANUAL_CHART_SELECTED_RING_STROKE_WIDTH / 2 * safeViewBoxUnitsPerScreenPixel
+          )
+          : 0
+      )
     }))
-    .filter(candidate => candidate.distanceSquared <= maxDistanceSquared)
+    .filter(candidate => candidate.distanceSquared <= candidate.hitRadius * candidate.hitRadius)
     .sort((left, right) => left.distanceSquared - right.distanceSquared || left.index - right.index)
     .map(candidate => candidate.point)
 }

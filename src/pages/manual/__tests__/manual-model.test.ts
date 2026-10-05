@@ -101,9 +101,21 @@ describe('manual backtest model', () => {
     expect(quotes[quotes.findIndex(quote => quote.date === '2025-11-10') + 1].date).toBe('2025-11-11')
     expect(november10.val).toBe(november11.val)
     expect(november10.y).toBe(november11.y)
-    expect(november11.x - november10.x).toBeLessThan(8.5)
+    expect(november11.x - november10.x).toBeCloseTo(3.533, 3)
 
     const candidates = getManualChartHitCandidates(points, november10.x, november10.y)
     expect(candidates.map(point => point.date)).toEqual(expect.arrayContaining(['2025-11-10', '2025-11-11']))
+  })
+
+  it('keeps the selected marker and adjacent equal-NAV date as candidates inside its visible stroke edge', () => {
+    const points = plotManualHistory(createDenseWeekdayQuotes())
+    const november10 = points.filter(point => point.date === '2025-11-10')[0]
+    const november11 = points.filter(point => point.date === '2025-11-11')[0]
+    const edgeClickX = november10.x + 5.2
+
+    expect(november11.x - november10.x).toBeCloseTo(3.533, 3)
+    expect(edgeClickX - november10.x).toBeCloseTo(5.2, 6)
+    expect(getManualChartHitCandidates(points, edgeClickX, november10.y, '2025-11-10', 1)
+      .map(point => point.date)).toEqual(expect.arrayContaining(['2025-11-10', '2025-11-11']))
   })
 })

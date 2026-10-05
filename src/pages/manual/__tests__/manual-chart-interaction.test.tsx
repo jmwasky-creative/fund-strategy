@@ -127,4 +127,79 @@ describe('manual chart date selection', () => {
 
     tree.unmount()
   })
+
+  it('keeps the selected date when clicking its rendered marker stroke beside an equal-NAV neighbor', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const quotes = createDenseQuotes()
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: quotes[0].date, endDate: quotes[quotes.length - 1].date },
+      quotes,
+      signals: [],
+      selectedDate: '2025-11-10',
+      chartDateChoices: [],
+      selectedSignalId: null,
+      nextSignalId: 1,
+      undo: null
+    })
+
+    const selectedMarker = tree.root.findAllByType('circle').filter(marker =>
+      marker.props['aria-label'] === '选择净值日期 2025-11-10，单位净值 1.1210'
+    )[0]
+    const selectedRing = tree.root.findAllByType('circle').filter(marker =>
+      marker.props.cx === selectedMarker.props.cx && marker.props.cy === selectedMarker.props.cy
+        && marker.props.r === 9
+    )[0]
+    const chart = tree.root.findAllByType('svg').filter(svg => svg.props['aria-label'])[0]
+    const screenScale = 0.75
+    const clickOffset = 5.2
+    const chartSvg = {
+      getScreenCTM: () => ({
+        a: screenScale,
+        b: 0,
+        c: 0,
+        d: screenScale,
+        inverse: () => ({
+          scale: 1 / screenScale,
+          translateX: -40 / screenScale,
+          translateY: -15 / screenScale
+        })
+      }),
+      createSVGPoint: () => {
+        const pointer: any = { x: 0, y: 0 }
+        pointer.matrixTransform = (matrix: any) => ({
+          x: pointer.x * matrix.scale + matrix.translateX,
+          y: pointer.y * matrix.scale + matrix.translateY
+        })
+        return pointer
+      }
+    }
+
+    expect(selectedMarker.props.r).toBe(5)
+    expect(selectedRing.props.r).toBe(9)
+    // The non-scaling 1.5px point stroke extends past r=5; 5.2 viewBox units is still visible.
+    expect(clickOffset).toBeLessThan(selectedMarker.props.r + 1.5 / 2 / screenScale)
+
+    chart.props.onClick({
+      nativeEvent: { detail: 1 },
+      currentTarget: chartSvg,
+      clientX: (selectedMarker.props.cx + clickOffset) * screenScale + 40,
+      clientY: selectedMarker.props.cy * screenScale + 15
+    })
+
+    expect(page.state.selectedDate).toBe('2025-11-10')
+    expect(page.state.chartDateChoices).toEqual(expect.arrayContaining(['2025-11-10', '2025-11-11']))
+    expect(buttonByText(tree, '添加买入点').props.disabled).toBe(true)
+    expect(buttonByText(tree, '添加卖出点').props.disabled).toBe(true)
+    expect(page.state.signals).toEqual([])
+
+    buttonByText(tree, '2025-11-11 · 净值 1.1210').props.onClick()
+    expect(page.state.selectedDate).toBe('2025-11-11')
+    expect(page.state.chartDateChoices).toEqual([])
+    expect(buttonByText(tree, '添加买入点').props.disabled).toBe(false)
+    buttonByText(tree, '添加买入点').props.onClick()
+    expect(page.state.signals.map((signal: any) => [signal.date, signal.type])).toEqual([['2025-11-11', 'buy']])
+
+    tree.unmount()
+  })
 })
