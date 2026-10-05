@@ -27,22 +27,31 @@ const formItemLayout = {
 
 export class BuyStragegyForm extends Component<FormComponentProps<FundFormObj>> {
   state = {
-    searchIndexData: [] as SearchIndexResp[]
+    searchIndexData: [] as SearchIndexResp[],
+    searchError: ''
   }
 
 
   handleSearchIndex = throttle(async (value) => {
 
     if (value) {
-      const result = await searchIndex(value)
-      this.setState({ searchIndexData: result });
+      this.setState({ searchError: '' })
+      try {
+        const result = await searchIndex(value)
+        this.setState({ searchIndexData: result, searchError: '' });
+      } catch (error) {
+        this.setState({
+          searchIndexData: [],
+          searchError: error && error.message ? error.message : '指数搜索失败，请稍后重试。'
+        })
+      }
     } else {
-      this.setState({ searchIndexData: [] });
+      this.setState({ searchIndexData: [], searchError: '' });
     }
   }, 1000)
 
   render() {
-    const { searchIndexData } = this.state
+    const { searchIndexData, searchError } = this.state
 
     const { getFieldDecorator, getFieldsValue } = this.props.form;
 
@@ -58,7 +67,7 @@ export class BuyStragegyForm extends Component<FormComponentProps<FundFormObj>> 
             filterOption={false}
             onSearch={this.handleSearchIndex}
             // onChange={this.handleChange}
-            notFoundContent={null}
+            notFoundContent={searchError || null}
           >
             {searchIndexData.map((d, index) => <Option key={d.id}>{d.name}[{d.code}]</Option>)}
           </Select>
@@ -91,6 +100,5 @@ export class BuyStragegyForm extends Component<FormComponentProps<FundFormObj>> 
     </section>
   }
 }
-
 
 

@@ -112,15 +112,18 @@ export interface FundFormObj {
 
 export interface FundSearchProp extends FormComponentProps<FundFormObj> {
   onSearch: (form: FundFormObj) => any
+  loading?: boolean
 }
 
 
 export class InnerSearchForm extends Component<FundSearchProp, {
   searchFundData: FundInfo[]
+  searchError: string
 }> {
 
   state = {
-    searchFundData: [] as FundInfo[]
+    searchFundData: [] as FundInfo[],
+    searchError: ''
   }
   private weekOpt = ['一', `二`, `三`, `四`, `五`].map((item, index) => {
     return {
@@ -154,10 +157,18 @@ export class InnerSearchForm extends Component<FundSearchProp, {
    */
   handleSearch = throttle(async (value) => {
     if (value) {
-      const result = await getFundInfo(value)
-      this.setState({ searchFundData: result });
+      this.setState({ searchError: '' })
+      try {
+        const result = await getFundInfo(value)
+        this.setState({ searchFundData: result, searchError: '' });
+      } catch (error) {
+        this.setState({
+          searchFundData: [],
+          searchError: error && error.message ? error.message : '基金搜索失败，请稍后重试。'
+        })
+      }
     } else {
-      this.setState({ searchFundData: [] });
+      this.setState({ searchFundData: [], searchError: '' });
     }
   }, 1000)
 
@@ -204,7 +215,7 @@ export class InnerSearchForm extends Component<FundSearchProp, {
   render() {
 
     const { getFieldDecorator } = this.props.form;
-    const { searchFundData } = this.state
+    const { searchFundData, searchError } = this.state
     let [curYear, curMonth, curDate] = dateFormat(new Date()).split('-').map(Number)
     curMonth = Number(curMonth) - 1
 
@@ -255,7 +266,7 @@ export class InnerSearchForm extends Component<FundSearchProp, {
               filterOption={false}
               onSearch={this.handleSearch}
               // onChange={this.handleChange}
-              notFoundContent={null}
+              notFoundContent={searchError || null}
             >
               {searchFundData.map(d => <Option key={d.code}>{d.name}[{d.code}]</Option>)}
             </Select>
@@ -333,7 +344,7 @@ export class InnerSearchForm extends Component<FundSearchProp, {
                 offset: 8
               }
             }}>
-              <Button type="primary" htmlType="submit">
+              <Button type="primary" htmlType="submit" loading={this.props.loading}>
                 查询
           </Button>
 

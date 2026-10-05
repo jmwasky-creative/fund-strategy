@@ -1,9 +1,7 @@
 
 
-import { dateFormat, roundToFix } from '../common'
-
-// TODO: 使用 fetch-jsonp
-const getJSONP = window['getJSONP']
+import { dateFormat, hasOnlyWeekendDates, isWeekendDate, roundToFix } from '../common'
+import { loadFundHistoryScript, MarketDataCoverageError, MarketDataError, requestIndexKlines, requestJSONP } from './market-api'
 
 /**
  * macd 买卖临界点
@@ -42,84 +40,80 @@ export interface FundJson {
 /**
  * 拉取数据, 260108
  */
-export const getFundData = async (fundCode: string | number, size: number | [any, any]): Promise<FundJson> => {
-  const page = 1
-  let pageSize: number
-  let startDate = '', endDate = ''
-  if (Array.isArray(size)) {
-    pageSize = (new Date(size[1]).getTime() - new Date(size[0]).getTime()) / 1000 / 60 / 60 / 24
-    startDate = dateFormat(new Date(size[0]))
-    endDate = dateFormat(new Date(size[1]))
-  } else {
-    pageSize = size
+export const getFundData = async (fundCodeInput: string | number, size: number | [any, any]): Promise<FundJson> => {
+  let fundCode = String(fundCodeInput).trim()
+  if (/^\d{1,6}$/.test(fundCode)) {
+    fundCode = fundCode.padStart(6, '0')
+  }
+  if (!/^\d{6}$/.test(fundCode)) {
+    throw new MarketDataError('基金净值', '基金代码必须为 6 位数字')
   }
 
-  // const path = `http://api.fund.eastmoney.com/f10/lsjz?fundCode=${fundCode}&pageIndex=${page}&pageSize=${Math.floor(pageSize)}&startDate=${startDate}&endDate=${endDate}&_=${Date.now()}`
-  const path = `http://fund.eastmoney.com/pingzhongdata/${fundCode}.js?v=${dateFormat(new Date(), 'yyyyMMddHHmmss')}`
-  
-  return new Promise((resolve) => {
-    getJSONP(path, (resp) => {
-    }, {
-      onload: ()=>{
-        let historyVal: any[] = window['Data_netWorthTrend'] || [] // 历史净值
-        // 日期    x  date
-        // 单位净值 y  val
-        // 分红送配 unitMoney  bonus
-        
-        if(historyVal.length === 0) {
-          console.error('查询基金净值失败', historyVal)
-    
-          throw new Error('查询基金净值失败')
-        }
-        console.log('hislen', historyVal.length)
-        historyVal = historyVal.slice(-pageSize)
-        console.log('historyVal ', historyVal)
-    
-        let previousItem
-        /**
-         * @important 基金数据必须是以时间倒序排序
-         */
-        const formatResult = historyVal.reverse().reduce((result, item) => {
-          const curFundObj: FundDataItem = {
-            date: dateFormat(item.x, 'yyyy-MM-dd') ,
-            val: item.y,
-            // accumulatedVal: item.LJJZ,
-            // growthRate: item.JZZZL,
-            bonus: item.unitMoney // 值为以下两种可能：拆分：每份基金份额折算1.018012713份； 分红：每份基金分红0.1元
-          }
-    
-          result.all[curFundObj.date] = curFundObj
-    
-          if (curFundObj.bonus) {
-            const matchResult = curFundObj.bonus.toString().match(/\d+.?\d+/)
-            curFundObj.bonus = matchResult ? Number(matchResult[0]) : 0
-    
-            result.bonus[curFundObj.date] = curFundObj
-    
-            // 分红分为 分红派送，以及份额折算两种
-            if ((item.unitMoney as string).startsWith('拆分')) {
-              curFundObj.isBonusPortion = true
-            }  
-          }
-    
-          previousItem = curFundObj
-    
-          return result
-        }, {
-          bonus: {},
-          all: {}
-        })
-        console.log('formatResult', formatResult)
-        resolve(formatResult)
-      }
-    })
+  let requestedRecords: number
+  if (Array.isArray(size)) {
+    const startTime = new Date(size[0]).getTime()
+    const endTime = new Date(size[1]).getTime()
+    if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime < startTime) {
+      throw new MarketDataError('基金净值', '所选日期范围无效')
+    }
+    requestedRecords = Math.floor((endTime - startTime) / 86400000)
+  } else {
+    requestedRecords = Math.floor(Number(size))
+  }
+  if (!Number.isFinite(requestedRecords) || requestedRecords < 0) {
+    throw new MarketDataError('基金净值', '请求的历史区间无效')
+  }
+  requestedRecords = Math.max(1, requestedRecords)
 
+  const historyVal = await loadFundHistoryScript(fundCode)
+  const selectedHistory = historyVal.slice(-requestedRecords)
+  if (selectedHistory.length === 0) {
+    throw new MarketDataError('基金净值', '没有可用于所选区间的历史净值')
+  }
+
+  const formatResult: FundJson = { all: {}, bonus: {} }
+  selectedHistory.slice().reverse().forEach((item: any) => {
+    const timestamp = Number(item && item.x)
+    const value = Number(item && item.y)
+    if (!Number.isFinite(timestamp) || !Number.isFinite(value) || value <= 0) {
+      throw new MarketDataError('基金净值', '历史净值响应格式无效')
+    }
+
+    const unitMoney = typeof item.unitMoney === 'string' ? item.unitMoney : ''
+    const matchResult = unitMoney.match(/\d+(?:\.\d+)?/)
+    const curFundObj: FundDataItem = {
+      date: dateFormat(timestamp, 'yyyy-MM-dd'),
+      val: value,
+      bonus: matchResult ? Number(matchResult[0]) : 0
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(curFundObj.date)) {
+      throw new MarketDataError('基金净值', '历史净值日期格式无效')
+    }
+
+    formatResult.all[curFundObj.date] = curFundObj
+    if (curFundObj.bonus) {
+      formatResult.bonus[curFundObj.date] = curFundObj
+      if (unitMoney.indexOf('拆分') === 0 || unitMoney.indexOf('折算') === 0) {
+        curFundObj.isBonusPortion = true
+      }
+    }
   })
 
-
-
-
-
+  if (Object.keys(formatResult.all).length === 0) {
+    throw new MarketDataError('基金净值', '没有可用于回测的历史净值')
+  }
+  if (Array.isArray(size)) {
+    const availableDates = Object.keys(formatResult.all).sort()
+    const latestDate = availableDates[availableDates.length - 1]
+    const requestedEnd = dateFormat(size[1])
+    const latestDateObj = new Date(`${latestDate}T00:00:00Z`)
+    latestDateObj.setUTCDate(latestDateObj.getUTCDate() + 1)
+    const firstUncoveredDate = latestDateObj.toISOString().slice(0, 10)
+    if (requestedEnd > latestDate && !hasOnlyWeekendDates(firstUncoveredDate, requestedEnd)) {
+      throw new MarketDataCoverageError('基金净值', dateFormat(size[0]), requestedEnd, latestDate)
+    }
+  }
+  return formatResult
 }
 
 
@@ -144,6 +138,73 @@ export interface IndexData {
   index?: number // 下标
   
   txnType?: 'buy'|'sell'
+}
+
+const readIndexCache = (code: string): Record<string, IndexData> => {
+  try {
+    const raw = localStorage.getItem(code)
+    if (!raw) {
+      return {}
+    }
+    const cache = JSON.parse(raw)
+    if (!cache || typeof cache !== 'object' || Array.isArray(cache)) {
+      localStorage.removeItem(code)
+      return {}
+    }
+    const valid = Object.keys(cache).every(date => {
+      const item = cache[date]
+      return /^\d{4}-\d{2}-\d{2}$/.test(date) && item && Number.isFinite(Number(item.val))
+    })
+    if (!valid) {
+      localStorage.removeItem(code)
+      return {}
+    }
+    return cache
+  } catch (error) {
+    return {}
+  }
+}
+
+const writeIndexCache = (code: string, value: Record<string, IndexData>) => {
+  try {
+    localStorage.setItem(code, JSON.stringify(value))
+  } catch (error) {
+    // The cache is an optimization; private-browsing/storage failures must not
+    // turn a successful market-data response into a failed backtest.
+  }
+}
+
+const resetIndexIndicators = (data: Record<string, IndexData>) => {
+  Object.keys(data).forEach(date => {
+    const item = data[date] as any
+    delete item.ema12
+    delete item.ema26
+    delete item.diff
+    delete item.dea
+    delete item.macd
+    delete item.macdPosition
+    delete item.txnType
+    delete item.index
+  })
+}
+
+const filterIndexData = (
+  data: Record<string, IndexData>,
+  rangeStart: number,
+  rangeEnd: number
+): Record<string, IndexData> => {
+  const firstDate = dateFormat(rangeStart - 10 * 24 * 3600 * 1000)
+  const lastDate = dateFormat(rangeEnd)
+  const rangedData: Record<string, IndexData> = {}
+  Object.keys(data).forEach(date => {
+    if (date >= firstDate && date <= lastDate) {
+      rangedData[date] = data[date]
+    }
+  })
+  if (Object.keys(rangedData).length === 0) {
+    throw new MarketDataError('指数行情', '所选日期范围内没有行情数据')
+  }
+  return rangedData
 }
 
 const EMA = (close: number, days: number, opt: {
@@ -375,93 +436,110 @@ export const getIndexFundData = async (opt: {
   code: string,
   range: [number | string, number | string]
 }) => {
-  // http://img1.money.126.net/data/hs/kline/day/history/2020/0000001.json
-  /* 数据结构
-  ["20200123",3037.95,2976.53,3045.04,2955.35,27276323400,-2.75]
-  日期，今开，今日收盘价，最高，最低，成交量，跌幅
-   */
+  const code = String(opt.code).trim()
+  if (!/^\d+\.\d+$/.test(code)) {
+    throw new MarketDataError('指数行情', '指数代码格式无效')
+  }
 
-  /**
-   * http://60.push2his.eastmoney.com/api/qt/stock/kline/get?secid=0.399997&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=0&beg=20160205&end=20200205&ut=fa5fd1943c7b386f172d6893dbfba10b&cb=cb30944405113958
-   * 响应： "2020-02-06,7386.27,7452.25,7461.18,7302.34,1936321,14723348992.00"
-   * 时间，今开，今收，最高，最低，成交量/手，成交额
-   */
+  const rangeStart = new Date(opt.range[0]).getTime()
+  const rangeEnd = new Date(opt.range[1]).getTime()
+  if (!Number.isFinite(rangeStart) || !Number.isFinite(rangeEnd) || rangeEnd < rangeStart) {
+    throw new MarketDataError('指数行情', '所选日期范围无效')
+  }
 
-  // q.stock.sohu.com/hisHq?code=zs_000001&start=20130930&end=20200201&stat=1&order=D&period=d&rt=jsonp
-  // ["2020-01-23", "3037.95", "2976.53", "-84.23", "-2.75%", "2955.35", "3045.04", "272763232",32749038.00]
-  // 日期，今开，收盘，下跌，跌幅，最低，最高，成交量/手，成交额/万
   let [start, end] = opt.range.map(item => dateFormat(item))
-  const savedData = JSON.parse(localStorage.getItem(opt.code) || '{}')
-  const dateList = Object.keys(savedData)
+  const savedData = readIndexCache(code)
+  const dateList = Object.keys(savedData).sort()
   const [savedStart, savedEnd] = [dateList[0], dateList[dateList.length - 1]]
-
-  // 如果之前没有该指数数据，拉取全部数据
-  if (dateList.length === 0) {
-    start = '19900101'
-    end = dateFormat(Date.now())
-  } else {
-    // 增量更新时间范围的 指数数据
-    if ((new Date(opt.range[0]) >= new Date(savedStart)) && (new Date(opt.range[1]) <= new Date(savedEnd))) {
-      return savedData
+  let shouldFetch = true
+  if (dateList.length > 0) {
+    if (rangeStart >= new Date(savedStart).getTime() && rangeEnd <= new Date(savedEnd).getTime()) {
+      shouldFetch = false
     } else {
-      if (new Date(opt.range[0]) >= new Date(savedStart)) {
+      if (rangeStart >= new Date(savedStart).getTime()) {
         start = savedEnd
       }
-      if (new Date(opt.range[1]) <= new Date(savedEnd)) {
+      if (rangeEnd <= new Date(savedEnd).getTime()) {
         end = savedStart
       }
     }
+  } else {
+    start = '1990-01-01'
+    end = dateFormat(Date.now())
   }
-  return new Promise((resolve) => {
-    getJSONP(`//60.push2his.eastmoney.com/api/qt/stock/kline/get?secid=${opt.code}&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=0&beg=${start.replace(/-/g, '')}&end=${end.replace(/-/g, '')}&ut=fa5fd1943c7b386f172d6893dbfba10b`, (res) => {
-      console.log(`指数基金 响应`, res.data.klines)
-      const list = res.data.klines
-      const indexFundData = list.reduce((result, cur: string) => {
-        const [date, , val] = cur.split(',')
-        result[date] = {
-          date,
-          val
-        }
-        return result
-      }, {})
 
-
-      let mergedData:Record<string, IndexData> = {
-        ...savedData,
-        ...indexFundData
-      }
-      const sortedDates = Object.keys(mergedData).sort((a, b) => new Date(a).getTime() - new Date(b).getTime())
-      
-      mergedData = sortedDates.reduce((result, cur) => {
-        result[cur] = mergedData[cur]
-        return result
-      }, {})
-      console.log('sorted date', mergedData)
-
-      calcMACD(mergedData)
-
-
-      // console.log('shangZhengData with eacd', Object.values(mergedData).slice(0, 10), mergedData) 
-
-
-
-      localStorage.setItem(opt.code, JSON.stringify(mergedData))
-
-      const rangedData = {}
-      // 开始时间提前 10 天，以免找不到数据
-      const minDate = new Date(opt.range[0]).getTime() - 10 * 24 * 3600 * 1000
-      
-      // 过滤出时间区间内的数据 
-      for(let date in mergedData) {
-        if(date >= dateFormat(minDate) && date <= dateFormat(opt.range[1])) {
-          rangedData[date] = mergedData[date]
-        }
-      }
-      resolve(rangedData)
+  const indexFundData: Record<string, IndexData> = {}
+  if (shouldFetch) {
+    const response = await requestIndexKlines({
+      secid: code,
+      fields1: 'f1,f2,f3,f4,f5',
+      fields2: 'f51,f52,f53,f54,f55,f56,f57',
+      klt: '101',
+      fqt: '0',
+      beg: start.replace(/-/g, ''),
+      end: end.replace(/-/g, ''),
+      ut: 'fa5fd1943c7b386f172d6893dbfba10b'
     })
-  })
+    const list = response && response.data && response.data.klines
+    if (!response || response.rc !== 0 || !Array.isArray(list)) {
+      throw new MarketDataError('指数行情', '数据源响应结构无效')
+    }
+    if (list.length === 0 && Object.keys(savedData).length === 0) {
+      throw new MarketDataError('指数行情', '数据源没有返回行情数据')
+    }
 
+    list.forEach((line: string) => {
+      if (typeof line !== 'string') {
+        throw new MarketDataError('指数行情', '行情记录格式无效')
+      }
+      const columns = line.split(',')
+      const date = columns[0]
+      const value = Number(columns[2])
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(value) || value <= 0) {
+        throw new MarketDataError('指数行情', '行情记录日期或收盘价无效')
+      }
+      indexFundData[date] = { date, val: value } as IndexData
+    })
+  }
 
+  let mergedData: Record<string, IndexData> = {
+    ...savedData,
+    ...indexFundData
+  }
+  const sortedDates = Object.keys(mergedData).sort((a, b) => new Date(a).getTime() - new Date(b).getTime())
+  mergedData = sortedDates.reduce((result, date) => {
+    result[date] = mergedData[date]
+    return result
+  }, {} as Record<string, IndexData>)
+  if (sortedDates.length === 0) {
+    throw new MarketDataError('指数行情', '没有可用于回测的行情数据')
+  }
+
+  const requestedStart = dateFormat(rangeStart)
+  const requestedEnd = dateFormat(rangeEnd)
+  const lastAvailable = sortedDates[sortedDates.length - 1]
+  if (requestedEnd > lastAvailable) {
+    const firstUncovered = new Date(`${lastAvailable}T00:00:00Z`)
+    firstUncovered.setUTCDate(firstUncovered.getUTCDate() + 1)
+    if (!hasOnlyWeekendDates(firstUncovered.toISOString().slice(0, 10), requestedEnd)) {
+      throw new MarketDataCoverageError('指数行情', requestedStart, requestedEnd, lastAvailable)
+    }
+  }
+
+  const currentDate = new Date(`${requestedStart}T00:00:00Z`)
+  const endDate = new Date(`${requestedEnd}T00:00:00Z`)
+  while (currentDate.getTime() <= endDate.getTime()) {
+    const date = currentDate.toISOString().slice(0, 10)
+    if (!isWeekendDate(date) && !Object.prototype.hasOwnProperty.call(mergedData, date)) {
+      throw new MarketDataCoverageError('指数行情', requestedStart, requestedEnd, lastAvailable, date)
+    }
+    currentDate.setUTCDate(currentDate.getUTCDate() + 1)
+  }
+
+  resetIndexIndicators(mergedData)
+  calcMACD(mergedData)
+  writeIndexCache(code, mergedData)
+  return filterIndexData(mergedData, rangeStart, rangeEnd)
 }
 
 /**
@@ -476,25 +554,38 @@ export interface SearchIndexResp {
  * 指数动态查询
  */
 export const searchIndex = async (input: string): Promise<SearchIndexResp[]> => {
-  // http://searchapi.eastmoney.com/api/suggest/get?cb=jQuery112408632397893769632_1580928562563&input=%E4%B8%AD%E8%AF%81%E7%99%BD%E9%85%92&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&markettype=&mktnum=&jys=&classify=&securitytype=&count=5&_=1580928562702
-  return new Promise((resolve) => {
-    const path = `//searchapi.eastmoney.com/api/suggest/get?input=${input}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&markettype=&mktnum=&jys=&classify=&securitytype=&count=5&_=${Date.now()}`
+  const query = String(input || '').trim()
+  if (!query) {
+    return []
+  }
+  if (query.length > 64) {
+    throw new MarketDataError('指数搜索', '搜索词过长')
+  }
 
-    getJSONP(path, (resp) => {
-      let data = resp.QuotationCodeTable.Data || []
-      data = data.filter(item => item.Classify === 'Index')
+  const url = new URL('https://searchapi.eastmoney.com/api/suggest/get')
+  url.searchParams.set('input', query)
+  url.searchParams.set('type', '14')
+  url.searchParams.set('token', 'D43BF722C8E33BDC906FB84D85E326E8')
+  url.searchParams.set('markettype', '')
+  url.searchParams.set('mktnum', '')
+  url.searchParams.set('jys', '')
+  url.searchParams.set('classify', '')
+  url.searchParams.set('securitytype', '')
+  url.searchParams.set('count', '5')
+  url.searchParams.set('_', `${Date.now()}`)
 
-      const result = data.map(item => {
-        return {
-          code: item.Code,
-          name: item.Name,
-          id: item.QuoteID
-        }
-      })
-
-      resolve(result)
-    })
-  })
+  const response: any = await requestJSONP('指数搜索', url.toString())
+  const table = response && response.QuotationCodeTable
+  if (!table || !Array.isArray(table.Data)) {
+    throw new MarketDataError('指数搜索', '数据源响应结构无效')
+  }
+  return table.Data.filter(item => item && item.Classify === 'Index'
+    && typeof item.Code === 'string' && typeof item.Name === 'string')
+    .map(item => ({
+      code: item.Code,
+      name: item.Name,
+      id: String(item.QuoteID || item.ID || item.Code)
+    }))
 }
 
 /**
@@ -508,19 +599,30 @@ export interface FundInfo {
  * 基金动态查询
  */
 export const getFundInfo = async (key): Promise<FundInfo[]> => {
-  return new Promise((resolve) => {
-    const path = `https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?m=10&t=700&IsNeedBaseInfo=0&IsNeedZTInfo=0&key=${key}&_=${Date.now()}`
+  const query = String(key || '').trim()
+  if (!query) {
+    return []
+  }
+  if (query.length > 64) {
+    throw new MarketDataError('基金搜索', '搜索词过长')
+  }
 
-    getJSONP(path, (resp) => {
-      const result = resp.Datas.map(item => {
-        return {
-          code: item.CODE,
-          name: item.NAME
-        }
-      })
+  const url = new URL('https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx')
+  url.searchParams.set('m', '10')
+  url.searchParams.set('t', '700')
+  url.searchParams.set('IsNeedBaseInfo', '0')
+  url.searchParams.set('IsNeedZTInfo', '0')
+  url.searchParams.set('key', query)
+  url.searchParams.set('_', `${Date.now()}`)
 
-      resolve(result)
-    })
-  })
-
+  const response: any = await requestJSONP('基金搜索', url.toString())
+  if (!response || !Array.isArray(response.Datas)) {
+    throw new MarketDataError('基金搜索', '数据源响应结构无效')
+  }
+  return response.Datas.filter(item => item && /^\d{6}$/.test(String(item.CODE || ''))
+    && typeof item.NAME === 'string')
+    .map(item => ({
+      code: String(item.CODE),
+      name: item.NAME
+    }))
 }

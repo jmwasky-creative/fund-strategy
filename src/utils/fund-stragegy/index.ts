@@ -4,8 +4,9 @@
  **************************/
 
 import { FundJson } from "../../../tools/get-fund-data-json"
-import { dateFormat, roundToFix } from "../common"
+import { dateFormat, isWeekendDate, roundToFix } from "../common"
 import { FundDataItem, IndexData } from './fetch-fund-data'
+import { MarketDataCoverageError } from './market-api'
 // import FundDataJson from './static/景顺长城新兴成长混合260108.json'
 const ONE_DAY = 24 * 60 * 60 * 1000
 
@@ -264,10 +265,15 @@ export class InvestmentStrategy {
       originData = opt.origin
     }
     const result = originData[  date ]
-    // 如果没有 result， 说明那一天是 非交易日，往更早的日期取值
     if(!result) {
-      const previewValidDate = dateFormat( new Date(date).getTime() - 24 * 60 * 60 * 1000)
-      return this.getFundByDate(previewValidDate, opt)
+      if (isWeekendDate(date)) {
+        const previewValidDate = dateFormat(new Date(`${date}T00:00:00Z`).getTime() - ONE_DAY)
+        return this.getFundByDate(previewValidDate, opt)
+      }
+      const previousDates = Object.keys(originData).filter(availableDate => availableDate < date).sort()
+      const lastAvailable = previousDates.length > 0 ? previousDates[previousDates.length - 1] : undefined
+      const source = opt && opt.origin ? '指数行情' : '基金净值'
+      throw new MarketDataCoverageError(source, date, date, lastAvailable)
     } else {
       return result
     }
@@ -491,6 +497,9 @@ export class InvestDateSnapshot {
     try {
       this.curFund = this.fundStrategy.getFundByDate(this.date)
     } catch(e) {
+      if (e instanceof MarketDataCoverageError) {
+        throw e
+      }
       throw new RangeError('所选时间超出基金运营范围')
     }
     if(!this.fundStrategy.latestInvestment) {
