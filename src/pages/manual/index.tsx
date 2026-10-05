@@ -1,0 +1,560 @@
+import React, { Component, FormEvent, KeyboardEvent } from 'react'
+import Alert from 'antd/es/alert'
+import Button from 'antd/es/button'
+import Card from 'antd/es/card'
+import Input from 'antd/es/input'
+import Modal from 'antd/es/modal'
+import Select from 'antd/es/select'
+import Spin from 'antd/es/spin'
+import 'antd/dist/antd.css'
+import { FundInfo, getFundInfo } from '@/utils/fund-stragegy/fetch-fund-data'
+import { loadManualHistory } from '@/utils/fund-stragegy/manual-history'
+import {
+  getSignalsInvalidatedByQuery,
+  hasManualQuoteDate,
+  ManualQuery,
+  ManualQuote,
+  ManualSignal,
+  ManualSignalType,
+  sortManualSignals
+} from './manual-model'
+import styles from './index.css'
+
+const { Option } = Select
+const CHART_WIDTH = 960
+const CHART_HEIGHT = 320
+const PLOT_LEFT = 58
+const PLOT_RIGHT = 906
+const PLOT_TOP = 34
+const PLOT_BOTTOM = 258
+
+const dateInputValue = (date: Date): string => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+
+const initialRange = (): { startDate: string, endDate: string } => {
+  const end = new Date()
+  const start = new Date(end.getFullYear() - 1, end.getMonth(), end.getDate())
+  return { startDate: dateInputValue(start), endDate: dateInputValue(end) }
+}
+
+interface UndoSnapshot {
+  signals: ManualSignal[]
+  selectedSignalId: number | null
+}
+
+interface PendingSelection {
+  query: ManualQuery
+  quotes: ManualQuote[]
+  invalidSignals: ManualSignal[]
+}
+
+interface ManualWorkspaceState {
+  draftFundCode: string
+  draftStartDate: string
+  draftEndDate: string
+  fundOptions: FundInfo[]
+  searchingFunds: boolean
+  fundSearchError: string
+  activeQuery: ManualQuery | null
+  quotes: ManualQuote[]
+  signals: ManualSignal[]
+  selectedDate: string
+  selectedSignalId: number | null
+  nextSignalId: number
+  undo: UndoSnapshot | null
+  pendingSelection: PendingSelection | null
+  loading: boolean
+  error: string
+}
+
+interface PlotPoint extends ManualQuote {
+  x: number
+  y: number
+}
+
+const plotHistory = (quotes: ManualQuote[]): PlotPoint[] => {
+  if (quotes.length === 0) {
+    return []
+  }
+  const values = quotes.map(item => item.val)
+  const min = Math.min.apply(null, values)
+  const max = Math.max.apply(null, values)
+  const spread = max - min
+  const usableSpread = spread === 0 ? Math.max(Math.abs(max) * 0.02, 0.0001) : spread
+  return quotes.map((quote, index) => ({
+    ...quote,
+    x: quotes.length === 1
+      ? (PLOT_LEFT + PLOT_RIGHT) / 2
+      : PLOT_LEFT + (PLOT_RIGHT - PLOT_LEFT) * index / (quotes.length - 1),
+    y: spread === 0
+      ? (PLOT_TOP + PLOT_BOTTOM) / 2
+      : PLOT_BOTTOM - (quote.val - min) / usableSpread * (PLOT_BOTTOM - PLOT_TOP)
+  }))
+}
+
+const errorMessage = (error: any): string => error && typeof error.message === 'string'
+  ? error.message
+  : '行情读取失败，请检查网络后重试。'
+
+export default class ManualBacktestPage extends Component<{}, ManualWorkspaceState> {
+  private searchTimeout: any = null
+  private searchVersion = 0
+
+  state: ManualWorkspaceState = {
+    draftFundCode: '',
+    draftStartDate: initialRange().startDate,
+    draftEndDate: initialRange().endDate,
+    fundOptions: [],
+    searchingFunds: false,
+    fundSearchError: '',
+    activeQuery: null,
+    quotes: [],
+    signals: [],
+    selectedDate: '',
+    selectedSignalId: null,
+    nextSignalId: 1,
+    undo: null,
+    pendingSelection: null,
+    loading: false,
+    error: ''
+  }
+
+  componentWillUnmount() {
+    if (this.searchTimeout) {
+      clearTimeout(this.searchTimeout)
+    }
+  }
+
+  private searchFunds = async (query: string, version: number) => {
+    try {
+      const fundOptions = await getFundInfo(query)
+      if (version === this.searchVersion) {
+        this.setState({ fundOptions, searchingFunds: false, fundSearchError: '' })
+      }
+    } catch (error) {
+      if (version === this.searchVersion) {
+        this.setState({
+          fundOptions: [],
+          searchingFunds: false,
+          fundSearchError: errorMessage(error)
+        })
+      }
+    }
+  }
+
+  private handleFundSearch = (value: string) => {
+    const query = String(value || '').trim()
+    const version = ++this.searchVersion
+    if (this.searchTimeout) {
+      clearTimeout(this.searchTimeout)
+      this.searchTimeout = null
+    }
+    if (!query) {
+      this.setState({ fundOptions: [], searchingFunds: false, fundSearchError: '' })
+      return
+    }
+    if (/^\d{6}$/.test(query)) {
+      this.setState({
+        fundOptions: [{ code: query, name: `基金代码 ${query}` }],
+        searchingFunds: false,
+        fundSearchError: ''
+      })
+      return
+    }
+    this.setState({ searchingFunds: true, fundSearchError: '' })
+    this.searchTimeout = setTimeout(() => this.searchFunds(query, version), 300)
+  }
+
+  private handleFundChange = (value: string) => {
+    this.setState({ draftFundCode: String(value || ''), error: '' })
+  }
+
+  private handleDateChange = (field: 'draftStartDate' | 'draftEndDate') => (event: React.ChangeEvent<HTMLInputElement>) => {
+    this.setState({ [field]: event.currentTarget.value, error: '' } as Pick<ManualWorkspaceState, 'draftStartDate' | 'draftEndDate' | 'error'>)
+  }
+
+  private submitQuery = (event?: FormEvent<HTMLFormElement>) => {
+    if (event) {
+      event.preventDefault()
+    }
+    if (this.state.loading || this.state.pendingSelection) {
+      return
+    }
+
+    const query: ManualQuery = {
+      fundCode: this.state.draftFundCode.trim(),
+      startDate: this.state.draftStartDate,
+      endDate: this.state.draftEndDate
+    }
+    if (!/^\d{6}$/.test(query.fundCode)) {
+      this.setState({ error: '请选择搜索结果或输入 6 位基金代码。' })
+      return
+    }
+    if (!query.startDate || !query.endDate || query.startDate > query.endDate) {
+      this.setState({ error: '请选择有效的开始日期和结束日期。' })
+      return
+    }
+
+    this.setState({ loading: true, error: '' })
+    loadManualHistory(query.fundCode, query.startDate, query.endDate).then(quotes => {
+      const previousFund = this.state.activeQuery ? this.state.activeQuery.fundCode : ''
+      const invalidSignals = getSignalsInvalidatedByQuery(
+        this.state.signals,
+        previousFund,
+        query,
+        quotes
+      )
+      if (invalidSignals.length > 0) {
+        this.setState({
+          loading: false,
+          pendingSelection: { query, quotes, invalidSignals }
+        })
+        return
+      }
+      this.commitSelection(query, quotes, [])
+    }).catch(error => {
+      this.setState((previousState) => ({
+        loading: false,
+        error: errorMessage(error),
+        draftFundCode: previousState.activeQuery ? previousState.activeQuery.fundCode : previousState.draftFundCode,
+        draftStartDate: previousState.activeQuery ? previousState.activeQuery.startDate : previousState.draftStartDate,
+        draftEndDate: previousState.activeQuery ? previousState.activeQuery.endDate : previousState.draftEndDate
+      }))
+    })
+  }
+
+  private commitSelection = (query: ManualQuery, quotes: ManualQuote[], invalidSignals: ManualSignal[]) => {
+    const invalidIds = new Set(invalidSignals.map(signal => signal.id))
+    this.setState((previousState) => {
+      const signals = previousState.signals.filter(signal => !invalidIds.has(signal.id))
+      const selectedSignalId = previousState.selectedSignalId !== null
+        && signals.some(signal => signal.id === previousState.selectedSignalId)
+        ? previousState.selectedSignalId
+        : null
+      const selectedDate = previousState.selectedDate && hasManualQuoteDate(quotes, previousState.selectedDate)
+        ? previousState.selectedDate
+        : (quotes.length > 0 ? quotes[0].date : '')
+      return {
+        activeQuery: query,
+        draftFundCode: query.fundCode,
+        draftStartDate: query.startDate,
+        draftEndDate: query.endDate,
+        quotes,
+        signals,
+        selectedSignalId,
+        selectedDate,
+        pendingSelection: null,
+        loading: false,
+        error: '',
+        undo: null
+      }
+    })
+  }
+
+  private cancelPendingSelection = () => {
+    this.setState((previousState) => ({
+      pendingSelection: null,
+      draftFundCode: previousState.activeQuery ? previousState.activeQuery.fundCode : previousState.draftFundCode,
+      draftStartDate: previousState.activeQuery ? previousState.activeQuery.startDate : previousState.draftStartDate,
+      draftEndDate: previousState.activeQuery ? previousState.activeQuery.endDate : previousState.draftEndDate
+    }))
+  }
+
+  private confirmPendingSelection = () => {
+    const pending = this.state.pendingSelection
+    if (pending) {
+      this.commitSelection(pending.query, pending.quotes, pending.invalidSignals)
+    }
+  }
+
+  private selectDate = (date: string) => {
+    if (hasManualQuoteDate(this.state.quotes, date)) {
+      this.setState({ selectedDate: date, selectedSignalId: null })
+    }
+  }
+
+  private handleChartPointKeyDown = (date: string, event: KeyboardEvent<SVGCircleElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      this.selectDate(date)
+    }
+  }
+
+  private addSignal = (type: ManualSignalType) => {
+    const { selectedDate, quotes } = this.state
+    if (!hasManualQuoteDate(quotes, selectedDate)) {
+      return
+    }
+    this.setState((previousState) => {
+      const signal: ManualSignal = {
+        id: previousState.nextSignalId,
+        date: selectedDate,
+        type
+      }
+      return {
+        signals: sortManualSignals(previousState.signals.concat(signal)),
+        selectedSignalId: signal.id,
+        nextSignalId: previousState.nextSignalId + 1,
+        undo: {
+          signals: previousState.signals.slice(),
+          selectedSignalId: previousState.selectedSignalId
+        }
+      }
+    })
+  }
+
+  private removeSignal = (id: number, event: React.MouseEvent<HTMLElement>) => {
+    event.stopPropagation()
+    this.setState((previousState) => ({
+      signals: previousState.signals.filter(signal => signal.id !== id),
+      selectedSignalId: previousState.selectedSignalId === id ? null : previousState.selectedSignalId,
+      undo: {
+        signals: previousState.signals.slice(),
+        selectedSignalId: previousState.selectedSignalId
+      }
+    }))
+  }
+
+  private selectSignal = (signal: ManualSignal) => {
+    this.setState({ selectedSignalId: signal.id, selectedDate: signal.date })
+  }
+
+  private undoLastEdit = () => {
+    const snapshot = this.state.undo
+    if (!snapshot) {
+      return
+    }
+    this.setState({
+      signals: snapshot.signals,
+      selectedSignalId: snapshot.selectedSignalId,
+      undo: null
+    })
+  }
+
+  private renderHistoryChart = () => {
+    const { quotes, signals, selectedDate, selectedSignalId } = this.state
+    const plotted = plotHistory(quotes)
+    if (plotted.length === 0) {
+      return null
+    }
+    const pointsAttribute = plotted.map(point => `${point.x},${point.y}`).join(' ')
+    const minVal = Math.min.apply(null, quotes.map(item => item.val))
+    const maxVal = Math.max.apply(null, quotes.map(item => item.val))
+    const signalsByDate: Record<string, ManualSignal[]> = {}
+    signals.forEach(signal => {
+      signalsByDate[signal.date] = (signalsByDate[signal.date] || []).concat(signal)
+    })
+
+    return <div className={styles.chartWrap}>
+      <svg
+        className={styles.chart}
+        viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+        role="group"
+        aria-label="基金历史单位净值图；选择一个实际净值点以编辑手动买卖信号"
+      >
+        <line x1={PLOT_LEFT} y1={PLOT_BOTTOM} x2={PLOT_RIGHT} y2={PLOT_BOTTOM} className={styles.axis} />
+        <line x1={PLOT_LEFT} y1={PLOT_TOP} x2={PLOT_LEFT} y2={PLOT_BOTTOM} className={styles.axis} />
+        <text x={PLOT_LEFT} y={20} className={styles.axisLabel}>{maxVal.toFixed(4)}</text>
+        <text x={PLOT_LEFT} y={PLOT_BOTTOM - 5} className={styles.axisLabel}>{minVal.toFixed(4)}</text>
+        {plotted.length > 1
+          ? <polyline points={pointsAttribute} className={styles.line} />
+          : null}
+        {plotted.map(point => {
+          const isSelected = selectedDate === point.date
+          const dateSignals = signalsByDate[point.date] || []
+          return <g key={point.date}>
+            {dateSignals.map((signal, index) => {
+              const offset = (index - (dateSignals.length - 1) / 2) * 15
+              const markerY = Math.max(18, point.y - 20)
+              return <g key={signal.id} aria-hidden="true">
+                <circle
+                  cx={point.x + offset}
+                  cy={markerY}
+                  r={8}
+                  fill={signal.type === 'buy' ? '#237804' : '#cf1322'}
+                  className={styles.signalMarker}
+                />
+                <text x={point.x + offset} y={markerY + 3} textAnchor="middle" className={styles.signalMarkerText}>
+                  {signal.type === 'buy' ? '买' : '卖'}
+                </text>
+              </g>
+            })}
+            {isSelected ? <circle cx={point.x} cy={point.y} r={9} className={styles.selectedRing} /> : null}
+            <circle
+              cx={point.x}
+              cy={point.y}
+              r={isSelected ? 5 : 3.5}
+              className={styles.quotePoint}
+              role="button"
+              tabIndex={0}
+              aria-label={`选择净值日期 ${point.date}，单位净值 ${point.val.toFixed(4)}`}
+              onClick={() => this.selectDate(point.date)}
+              onKeyDown={event => this.handleChartPointKeyDown(point.date, event)}
+            >
+              <title>{`${point.date}  单位净值 ${point.val.toFixed(4)}`}</title>
+            </circle>
+          </g>
+        })}
+        <text x={PLOT_LEFT} y={CHART_HEIGHT - 14} className={styles.axisLabel}>{quotes[0].date}</text>
+        <text x={PLOT_RIGHT} y={CHART_HEIGHT - 14} textAnchor="end" className={styles.axisLabel}>{quotes[quotes.length - 1].date}</text>
+      </svg>
+      <div className={styles.chartLegend}>
+        <span><i className={styles.buyLegend} />买入点</span>
+        <span><i className={styles.sellLegend} />卖出点</span>
+        <span>点击图上的净值点或使用下方日期选项，日期只会对应实际有净值的交易日。</span>
+      </div>
+      {selectedSignalId !== null
+        ? <span className={styles.srOnly}>当前选中点位编号 {selectedSignalId}</span>
+        : null}
+    </div>
+  }
+
+  render() {
+    const {
+      draftFundCode,
+      draftStartDate,
+      draftEndDate,
+      fundOptions,
+      searchingFunds,
+      fundSearchError,
+      activeQuery,
+      quotes,
+      signals,
+      selectedDate,
+      selectedSignalId,
+      undo,
+      pendingSelection,
+      loading,
+      error
+    } = this.state
+    const orderedSignals = sortManualSignals(signals)
+    const selectedQuote = quotes.filter(item => item.date === selectedDate)[0]
+
+    return <main className={styles.workspace}>
+      <header className={styles.intro}>
+        <h2>手动回测工作区</h2>
+        <p>选择基金和日期范围，在历史单位净值图上标记买入或卖出信号。点位只作为回测输入，不会发送真实交易委托。</p>
+      </header>
+
+      <Card title="基金与日期范围" className={styles.queryCard}>
+        <form onSubmit={this.submitQuery}>
+          <div className={styles.queryGrid}>
+            <label className={styles.field}>
+              <span>基金（输入名称或 6 位代码）</span>
+              <Select
+                showSearch
+                allowClear
+                showArrow={false}
+                filterOption={false}
+                value={draftFundCode || undefined}
+                placeholder="搜索基金名称或代码"
+                disabled={loading || !!pendingSelection}
+                notFoundContent={searchingFunds ? <Spin size="small" /> : (fundSearchError || '输入名称搜索，或输入 6 位代码')}
+                onSearch={this.handleFundSearch}
+                onChange={this.handleFundChange}
+              >
+                {fundOptions.map(item => <Option key={item.code} value={item.code}>{item.name} [{item.code}]</Option>)}
+              </Select>
+              {fundSearchError ? <small className={styles.searchError}>{fundSearchError}</small> : null}
+            </label>
+            <label className={styles.field}>
+              <span>开始日期</span>
+              <Input
+                type="date"
+                value={draftStartDate}
+                disabled={loading || !!pendingSelection}
+                onChange={this.handleDateChange('draftStartDate')}
+              />
+            </label>
+            <label className={styles.field}>
+              <span>结束日期</span>
+              <Input
+                type="date"
+                value={draftEndDate}
+                disabled={loading || !!pendingSelection}
+                onChange={this.handleDateChange('draftEndDate')}
+              />
+            </label>
+          </div>
+          <div className={styles.queryActions}>
+            <Button type="primary" htmlType="submit" loading={loading} disabled={!!pendingSelection}>加载历史净值</Button>
+            {activeQuery ? <span className={styles.activeRange}>当前：{activeQuery.fundCode} · {activeQuery.startDate} 至 {activeQuery.endDate}</span> : null}
+          </div>
+        </form>
+      </Card>
+
+      {error ? <Alert className={styles.feedback} type="error" showIcon message="无法加载基金净值" description={error} /> : null}
+      {loading ? <div className={styles.loading}><Spin tip="正在读取基金历史净值…" /></div> : null}
+      {!loading && activeQuery && quotes.length === 0
+        ? <Alert className={styles.feedback} type="info" showIcon message="所选范围暂无可显示的净值" description="请检查基金代码或扩大日期范围后重试。" />
+        : null}
+
+      {quotes.length > 0 ? <div className={styles.workspaceGrid}>
+        <Card title="历史单位净值" className={styles.chartCard}>
+          <p className={styles.chartSummary}>{activeQuery ? `${activeQuery.fundCode} · ${quotes.length} 个实际净值交易日` : ''}</p>
+          {this.renderHistoryChart()}
+          <div className={styles.selectedQuote}>
+            {selectedQuote
+              ? <span>选中实际交易日：<strong>{selectedQuote.date}</strong>　单位净值：<strong>{selectedQuote.val.toFixed(4)}</strong></span>
+              : <span>请在图上选择一个实际净值交易日。</span>}
+          </div>
+          <label className={styles.dateSelector}>
+            <span>精确选择交易日</span>
+            <Select
+              value={selectedDate || undefined}
+              placeholder="请选择有净值的交易日"
+              showSearch
+              optionFilterProp="children"
+              onChange={this.selectDate}
+            >
+              {quotes.map(item => <Option key={item.date} value={item.date}>{item.date} · 净值 {item.val.toFixed(4)}</Option>)}
+            </Select>
+          </label>
+          <div className={styles.signalActions}>
+            <Button type="primary" disabled={!selectedQuote} onClick={() => this.addSignal('buy')}>添加买入点</Button>
+            <Button type="danger" disabled={!selectedQuote} onClick={() => this.addSignal('sell')}>添加卖出点</Button>
+            <Button disabled={!undo} onClick={this.undoLastEdit}>撤销最近一次点位操作</Button>
+          </div>
+        </Card>
+
+        <Card title={`点位清单（${signals.length}）`} className={styles.listCard}>
+          {orderedSignals.length === 0
+            ? <p className={styles.emptyList}>尚未添加手动买卖点。先从图上选择一个实际净值日期，再添加信号。</p>
+            : <div className={styles.tableWrap}>
+              <table className={styles.signalTable}>
+                <thead><tr><th>信号</th><th>日期</th><th>操作</th></tr></thead>
+                <tbody>
+                  {orderedSignals.map(signal => <tr
+                    key={signal.id}
+                    className={selectedSignalId === signal.id ? styles.selectedRow : ''}
+                    onClick={() => this.selectSignal(signal)}
+                    aria-selected={selectedSignalId === signal.id}
+                  >
+                    <td><span className={signal.type === 'buy' ? styles.buyType : styles.sellType}>{signal.type === 'buy' ? '买入' : '卖出'}</span></td>
+                    <td>{signal.date}</td>
+                    <td><Button size="small" onClick={event => this.removeSignal(signal.id, event)}>移除</Button></td>
+                  </tr>)}
+                </tbody>
+              </table>
+            </div>}
+          <p className={styles.disclaimer}>此清单只记录本地手动回测输入；不校验交易序列，不提交任何真实订单。</p>
+        </Card>
+      </div> : null}
+
+      <Modal
+        visible={!!pendingSelection}
+        title="确认切换基金或日期范围"
+        okText="确认并移除失效点位"
+        cancelText="取消，保留当前选择"
+        onOk={this.confirmPendingSelection}
+        onCancel={this.cancelPendingSelection}
+        maskClosable={false}
+      >
+        {pendingSelection ? <div>
+          <p>切换到基金 {pendingSelection.query.fundCode}（{pendingSelection.query.startDate} 至 {pendingSelection.query.endDate}）后，以下 {pendingSelection.invalidSignals.length} 个点位将不再适用并被移除：</p>
+          <ul>{pendingSelection.invalidSignals.map(signal => <li key={signal.id}>{signal.date} · {signal.type === 'buy' ? '买入' : '卖出'}</li>)}</ul>
+          <p>取消将完整保留当前基金、日期范围和所有点位。</p>
+        </div> : null}
+      </Modal>
+    </main>
+  }
+}

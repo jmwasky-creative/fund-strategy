@@ -11,6 +11,7 @@ const config: IConfig =  {
       component: '../layouts/index',
       routes: [
         { path: '/', component: '../pages/index' },
+        { path: '/manual', component: '../pages/manual/index' },
         { path: '/compare', component: '../pages/compare/compare' }
       ]
     }
