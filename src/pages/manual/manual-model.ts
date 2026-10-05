@@ -1,8 +1,18 @@
 export type ManualSignalType = 'buy' | 'sell'
 
+export type ManualCorporateActionKind = 'share-split' | 'distribution' | 'unclassified'
+
+export interface ManualCorporateAction {
+  date: string
+  kind: ManualCorporateActionKind
+  value: number
+  description: string
+}
+
 export interface ManualQuote {
   date: string
   val: number
+  corporateActions?: ManualCorporateAction[]
 }
 
 export interface ManualSignal {
@@ -133,15 +143,39 @@ export const validateManualSignalSequence = (
 
 /** Filter and sort provider history without substituting a nearby date for a missing date. */
 export const filterManualQuotes = (
-  history: Record<string, { date?: string, val: number }>,
+  history: Record<string, {
+    date?: string,
+    val: number,
+    bonus?: number,
+    isBonusPortion?: boolean,
+    unitMoney?: string
+  }>,
   startDate: string,
   endDate: string
 ): ManualQuote[] => Object.keys(history)
   .filter(date => date >= startDate && date <= endDate)
-  .map(date => ({
-    date: history[date].date || date,
-    val: Number(history[date].val)
-  }))
+  .map(date => {
+    const source = history[date]
+    const quoteDate = source.date || date
+    const description = typeof source.unitMoney === 'string' ? source.unitMoney.trim() : ''
+    if (!description) {
+      return { date: quoteDate, val: Number(source.val) }
+    }
+    const isSplit = Boolean(source.isBonusPortion) || /拆分|折算/.test(description)
+    const isDistribution = /分红|派现|现金|红利/.test(description)
+    return {
+      date: quoteDate,
+      val: Number(source.val),
+      corporateActions: [{
+        date: quoteDate,
+        kind: isSplit ? 'share-split' as ManualCorporateActionKind
+          : isDistribution ? 'distribution' as ManualCorporateActionKind
+            : 'unclassified' as ManualCorporateActionKind,
+        value: Number(source.bonus || 0),
+        description
+      }]
+    }
+  })
   .filter(item => /^\d{4}-\d{2}-\d{2}$/.test(item.date) && Number.isFinite(item.val) && item.val > 0)
   .filter(item => item.date >= startDate && item.date <= endDate)
   .sort((left, right) => left.date.localeCompare(right.date))

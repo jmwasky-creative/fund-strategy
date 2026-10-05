@@ -24,6 +24,7 @@ export interface FundDataItem {
   // growthRate: number
   bonus: number
   isBonusPortion?: boolean // FHSP: "每份基金份额折算1.020420194份"
+  unitMoney?: string
 
 }
 
@@ -84,7 +85,8 @@ export const getFundData = async (fundCodeInput: string | number, size: number |
     const curFundObj: FundDataItem = {
       date: dateFormat(timestamp, 'yyyy-MM-dd'),
       val: value,
-      bonus: matchResult ? Number(matchResult[0]) : 0
+      bonus: matchResult ? Number(matchResult[0]) : 0,
+      unitMoney
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(curFundObj.date)) {
       throw new MarketDataError('基金净值', '历史净值日期格式无效')

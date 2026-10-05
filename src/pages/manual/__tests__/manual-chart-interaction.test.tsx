@@ -238,7 +238,7 @@ describe('manual sequence validation feedback', () => {
     })
 
     expect(renderedText(tree.root)).toContain('买卖信号序列校验通过')
-    expect(renderedText(tree.root)).toContain('尚无回测执行入口')
+    expect(renderedText(tree.root)).toContain('有效序列可进入独立的历史模拟引擎')
 
     buttonByText(tree, '添加卖出点').props.onClick()
     expect(renderedText(tree.root)).toContain('空仓')
@@ -312,6 +312,45 @@ describe('manual sequence validation feedback', () => {
     expect(tree.root.findAllByType('g').some(group =>
       group.props.role === 'img' && String(group.props['aria-label']).includes('期末未平仓且尚未估值')
     )).toBe(true)
+
+    tree.unmount()
+  })
+
+  it('requires explicit simulation parameters and renders an estimated but unclosed terminal holding', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-02', endDate: '2024-01-03' },
+      quotes: [
+        { date: '2024-01-02', val: 1.02 },
+        { date: '2024-01-03', val: 1.03 }
+      ],
+      signals: [{ id: 1, date: '2024-01-02', type: 'buy' }]
+    })
+
+    buttonByText(tree, '运行模拟回测').props.onClick()
+    expect(page.state.replayResult).toBeNull()
+    expect(page.state.replayError).toContain('请显式填写初始资金')
+
+    page.setState({ replayConfig: {
+      initialCash: '1000',
+      buyAmount: '500',
+      buyFeeRatePercent: '0',
+      sellFeeRatePercent: '0',
+      buySlippageRatePercent: '0',
+      sellSlippageRatePercent: '0'
+    } })
+    buttonByText(tree, '运行模拟回测').props.onClick()
+
+    expect(page.state.replayError).toBe('')
+    expect(page.state.replayResult.summary).toMatchObject({
+      endingPositionStatus: 'open',
+      completedTradeCount: 0,
+      openTradeCount: 1,
+      lastNavDate: '2024-01-03'
+    })
+    expect(renderedText(tree.root)).toContain('open / 未平仓')
+    expect(renderedText(tree.root)).toContain('不计入已完成交易')
 
     tree.unmount()
   })
