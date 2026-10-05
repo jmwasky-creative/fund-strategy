@@ -29,6 +29,7 @@ const checkList: (keyof typeof keyTextMap)[] = ['totalAmount','leftAmount', 'pro
 
 interface CompareFormProp extends FormComponentProps{
   onSearch: (val: CompareFormObj)=>void
+  loading?: boolean
 }
 export interface CompareFormObj {
   /**
@@ -120,7 +121,7 @@ export class CompareForm extends  Component<CompareFormProp> {
         </Form.Item>
 
         <Form.Item wrapperCol={{   offset: 4 }}>
-          <Button type="primary" htmlType="submit">
+          <Button type="primary" htmlType="submit" loading={this.props.loading}>
             比较策略
           </Button>
         </Form.Item>
