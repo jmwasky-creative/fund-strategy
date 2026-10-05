@@ -18,15 +18,16 @@ import {
   ManualSignalType,
   sortManualSignals
 } from './manual-model'
+import { getManualChartHitCandidates, MANUAL_CHART_LAYOUT, plotManualHistory } from './manual-chart-model'
 import styles from './index.css'
 
 const { Option } = Select
-const CHART_WIDTH = 960
-const CHART_HEIGHT = 320
-const PLOT_LEFT = 58
-const PLOT_RIGHT = 906
-const PLOT_TOP = 34
-const PLOT_BOTTOM = 258
+const CHART_WIDTH = MANUAL_CHART_LAYOUT.width
+const CHART_HEIGHT = MANUAL_CHART_LAYOUT.height
+const PLOT_LEFT = MANUAL_CHART_LAYOUT.plotLeft
+const PLOT_RIGHT = MANUAL_CHART_LAYOUT.plotRight
+const PLOT_TOP = MANUAL_CHART_LAYOUT.plotTop
+const PLOT_BOTTOM = MANUAL_CHART_LAYOUT.plotBottom
 
 const dateInputValue = (date: Date): string => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 
@@ -58,37 +59,13 @@ interface ManualWorkspaceState {
   quotes: ManualQuote[]
   signals: ManualSignal[]
   selectedDate: string
+  chartDateChoices: string[]
   selectedSignalId: number | null
   nextSignalId: number
   undo: UndoSnapshot | null
   pendingSelection: PendingSelection | null
   loading: boolean
   error: string
-}
-
-interface PlotPoint extends ManualQuote {
-  x: number
-  y: number
-}
-
-const plotHistory = (quotes: ManualQuote[]): PlotPoint[] => {
-  if (quotes.length === 0) {
-    return []
-  }
-  const values = quotes.map(item => item.val)
-  const min = Math.min.apply(null, values)
-  const max = Math.max.apply(null, values)
-  const spread = max - min
-  const usableSpread = spread === 0 ? Math.max(Math.abs(max) * 0.02, 0.0001) : spread
-  return quotes.map((quote, index) => ({
-    ...quote,
-    x: quotes.length === 1
-      ? (PLOT_LEFT + PLOT_RIGHT) / 2
-      : PLOT_LEFT + (PLOT_RIGHT - PLOT_LEFT) * index / (quotes.length - 1),
-    y: spread === 0
-      ? (PLOT_TOP + PLOT_BOTTOM) / 2
-      : PLOT_BOTTOM - (quote.val - min) / usableSpread * (PLOT_BOTTOM - PLOT_TOP)
-  }))
 }
 
 const errorMessage = (error: any): string => error && typeof error.message === 'string'
@@ -110,6 +87,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     quotes: [],
     signals: [],
     selectedDate: '',
+    chartDateChoices: [],
     selectedSignalId: null,
     nextSignalId: 1,
     undo: null,
@@ -194,7 +172,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       return
     }
 
-    this.setState({ loading: true, error: '' })
+    this.setState({ loading: true, error: '', chartDateChoices: [] })
     loadManualHistory(query.fundCode, query.startDate, query.endDate).then(quotes => {
       const previousFund = this.state.activeQuery ? this.state.activeQuery.fundCode : ''
       const invalidSignals = getSignalsInvalidatedByQuery(
@@ -242,6 +220,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         signals,
         selectedSignalId,
         selectedDate,
+        chartDateChoices: [],
         pendingSelection: null,
         loading: false,
         error: '',
@@ -268,7 +247,41 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
 
   private selectDate = (date: string) => {
     if (hasManualQuoteDate(this.state.quotes, date)) {
-      this.setState({ selectedDate: date, selectedSignalId: null })
+      this.setState({ selectedDate: date, selectedSignalId: null, chartDateChoices: [] })
+    }
+  }
+
+  private cancelChartDateChoices = () => {
+    this.setState({ chartDateChoices: [] })
+  }
+
+  private handleChartClick = (event: React.MouseEvent<SVGSVGElement>) => {
+    // A keyboard-generated click is handled by the focused point's key handler.
+    if (event.nativeEvent.detail === 0) {
+      return
+    }
+    const svg = event.currentTarget
+    const screenMatrix = svg.getScreenCTM()
+    if (!screenMatrix) {
+      return
+    }
+    const pointer = svg.createSVGPoint()
+    pointer.x = event.clientX
+    pointer.y = event.clientY
+    const chartPoint = pointer.matrixTransform(screenMatrix.inverse())
+    const candidates = getManualChartHitCandidates(
+      plotManualHistory(this.state.quotes),
+      chartPoint.x,
+      chartPoint.y
+    )
+
+    if (candidates.length === 1) {
+      this.selectDate(candidates[0].date)
+    } else if (candidates.length > 1) {
+      // Preserve the current date until the user explicitly chooses one.
+      this.setState({ chartDateChoices: candidates.map(point => point.date) })
+    } else if (this.state.chartDateChoices.length > 0) {
+      this.cancelChartDateChoices()
     }
   }
 
@@ -280,8 +293,8 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
   }
 
   private addSignal = (type: ManualSignalType) => {
-    const { selectedDate, quotes } = this.state
-    if (!hasManualQuoteDate(quotes, selectedDate)) {
+    const { selectedDate, quotes, chartDateChoices } = this.state
+    if (chartDateChoices.length > 0 || !hasManualQuoteDate(quotes, selectedDate)) {
       return
     }
     this.setState((previousState) => {
@@ -315,7 +328,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
   }
 
   private selectSignal = (signal: ManualSignal) => {
-    this.setState({ selectedSignalId: signal.id, selectedDate: signal.date })
+    this.setState({ selectedSignalId: signal.id, selectedDate: signal.date, chartDateChoices: [] })
   }
 
   private undoLastEdit = () => {
@@ -332,7 +345,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
 
   private renderHistoryChart = () => {
     const { quotes, signals, selectedDate, selectedSignalId } = this.state
-    const plotted = plotHistory(quotes)
+    const plotted = plotManualHistory(quotes)
     if (plotted.length === 0) {
       return null
     }
@@ -350,7 +363,9 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
         role="group"
         aria-label="基金历史单位净值图；选择一个实际净值点以编辑手动买卖信号"
+        onClick={this.handleChartClick}
       >
+        <rect x="0" y="0" width={CHART_WIDTH} height={CHART_HEIGHT} fill="transparent" pointerEvents="all" aria-hidden="true" />
         <line x1={PLOT_LEFT} y1={PLOT_BOTTOM} x2={PLOT_RIGHT} y2={PLOT_BOTTOM} className={styles.axis} />
         <line x1={PLOT_LEFT} y1={PLOT_TOP} x2={PLOT_LEFT} y2={PLOT_BOTTOM} className={styles.axis} />
         <text x={PLOT_LEFT} y={20} className={styles.axisLabel}>{maxVal.toFixed(4)}</text>
@@ -387,11 +402,8 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
               role="button"
               tabIndex={0}
               aria-label={`选择净值日期 ${point.date}，单位净值 ${point.val.toFixed(4)}`}
-              onClick={() => this.selectDate(point.date)}
               onKeyDown={event => this.handleChartPointKeyDown(point.date, event)}
-            >
-              <title>{`${point.date}  单位净值 ${point.val.toFixed(4)}`}</title>
-            </circle>
+            />
           </g>
         })}
         <text x={PLOT_LEFT} y={CHART_HEIGHT - 14} className={styles.axisLabel}>{quotes[0].date}</text>
@@ -400,7 +412,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       <div className={styles.chartLegend}>
         <span><i className={styles.buyLegend} />买入点</span>
         <span><i className={styles.sellLegend} />卖出点</span>
-        <span>点击图上的净值点或使用下方日期选项，日期只会对应实际有净值的交易日。</span>
+        <span>图上重叠点会先显示候选日期；也可用下方选项精确选择实际净值交易日。</span>
       </div>
       {selectedSignalId !== null
         ? <span className={styles.srOnly}>当前选中点位编号 {selectedSignalId}</span>
@@ -420,6 +432,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       quotes,
       signals,
       selectedDate,
+      chartDateChoices,
       selectedSignalId,
       undo,
       pendingSelection,
@@ -492,6 +505,18 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         <Card title="历史单位净值" className={styles.chartCard}>
           <p className={styles.chartSummary}>{activeQuery ? `${activeQuery.fundCode} · ${quotes.length} 个实际净值交易日` : ''}</p>
           {this.renderHistoryChart()}
+          {chartDateChoices.length > 0 ? <div className={styles.chartDisambiguation} role="group" aria-label="选择图表重叠区域对应的净值日期" aria-live="polite">
+            <p>这个点击位置覆盖多个净值点；当前选择未更改。请明确选择目标日期：</p>
+            <div className={styles.chartDateOptions}>
+              {chartDateChoices.map(date => {
+                const quote = quotes.find(item => item.date === date)
+                return quote ? <Button key={date} size="small" onClick={() => this.selectDate(date)}>
+                  {date} · 净值 {quote.val.toFixed(4)}
+                </Button> : null
+              })}
+              <Button size="small" onClick={this.cancelChartDateChoices}>取消选择</Button>
+            </div>
+          </div> : null}
           <div className={styles.selectedQuote}>
             {selectedQuote
               ? <span>选中实际交易日：<strong>{selectedQuote.date}</strong>　单位净值：<strong>{selectedQuote.val.toFixed(4)}</strong></span>
@@ -510,8 +535,8 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
             </Select>
           </label>
           <div className={styles.signalActions}>
-            <Button type="primary" disabled={!selectedQuote} onClick={() => this.addSignal('buy')}>添加买入点</Button>
-            <Button type="danger" disabled={!selectedQuote} onClick={() => this.addSignal('sell')}>添加卖出点</Button>
+            <Button type="primary" disabled={!selectedQuote || chartDateChoices.length > 0} onClick={() => this.addSignal('buy')}>添加买入点</Button>
+            <Button type="danger" disabled={!selectedQuote || chartDateChoices.length > 0} onClick={() => this.addSignal('sell')}>添加卖出点</Button>
             <Button disabled={!undo} onClick={this.undoLastEdit}>撤销最近一次点位操作</Button>
           </div>
         </Card>

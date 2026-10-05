@@ -5,6 +5,25 @@ import {
   ManualSignal,
   sortManualSignals
 } from '../manual-model'
+import { getManualChartHitCandidates, plotManualHistory } from '../manual-chart-model'
+
+const createDenseWeekdayQuotes = (): { date: string, val: number }[] => {
+  const dates: string[] = []
+  const current = new Date(Date.UTC(2025, 0, 1))
+  while (dates.length < 241) {
+    const weekday = current.getUTCDay()
+    if (weekday !== 0 && weekday !== 6) {
+      dates.push(current.toISOString().slice(0, 10))
+    }
+    current.setUTCDate(current.getUTCDate() + 1)
+  }
+  return dates.map((date, index) => ({
+    date,
+    val: date === '2025-11-10' || date === '2025-11-11'
+      ? 1.121
+      : 1.1 + index * 0.00008 + Math.sin(index / 9) * 0.0004
+  }))
+}
 
 describe('manual backtest model', () => {
   it('filters only in-range actual NAV rows and sorts dates ascending', () => {
@@ -70,5 +89,21 @@ describe('manual backtest model', () => {
     ])
 
     expect(invalid).toEqual(signals)
+  })
+
+  it('detects both dates inside the overlapping hit area on a dense 241-point chart', () => {
+    const quotes = createDenseWeekdayQuotes()
+    const points = plotManualHistory(quotes)
+    const november10 = points.filter(point => point.date === '2025-11-10')[0]
+    const november11 = points.filter(point => point.date === '2025-11-11')[0]
+
+    expect(quotes).toHaveLength(241)
+    expect(quotes[quotes.findIndex(quote => quote.date === '2025-11-10') + 1].date).toBe('2025-11-11')
+    expect(november10.val).toBe(november11.val)
+    expect(november10.y).toBe(november11.y)
+    expect(november11.x - november10.x).toBeLessThan(8.5)
+
+    const candidates = getManualChartHitCandidates(points, november10.x, november10.y)
+    expect(candidates.map(point => point.date)).toEqual(expect.arrayContaining(['2025-11-10', '2025-11-11']))
   })
 })

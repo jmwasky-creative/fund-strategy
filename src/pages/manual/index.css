@@ -106,6 +106,7 @@
   width: 100%;
   min-height: 240px;
   overflow: visible;
+  cursor: crosshair;
 }
 
 .axis {
@@ -131,11 +132,10 @@
   fill: #3157a4;
   stroke: #fff;
   stroke-width: 1.5;
-  cursor: pointer;
+  pointer-events: none;
   vector-effect: non-scaling-stroke;
 }
 
-.quotePoint:hover,
 .quotePoint:focus {
   fill: #f59e0b;
   outline: none;
@@ -176,6 +176,25 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+
+.chartDisambiguation {
+  margin: 10px 0 14px;
+  padding: 12px;
+  border: 1px solid #faad14;
+  border-radius: 4px;
+  background: #fffbe6;
+  color: #614700;
+}
+
+.chartDisambiguation p {
+  margin: 0 0 8px;
+}
+
+.chartDateOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .buyLegend,
