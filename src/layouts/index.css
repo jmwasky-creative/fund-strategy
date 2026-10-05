@@ -10,14 +10,34 @@
   font-weight: normal;
   letter-spacing: -1px;
   background: darkslateblue;
-  padding: .6em 0;
+  padding: .6em 220px .6em 16px;
   color: white;
   margin: 0;
+  box-sizing: border-box;
 }
 
-.compare-btn {
+.navActions {
   position: absolute;
+  display: flex;
+  gap: 8px;
   transform: translate(0, -50%);
   right: 15px;
   top: 50%;
+}
+
+.navButton {
+  white-space: nowrap;
+}
+
+@media (max-width: 560px) {
+  .title {
+    min-height: 90px;
+    padding: 14px 190px 14px 12px;
+    font-size: 1.8rem;
+  }
+
+  .navActions {
+    right: 8px;
+    gap: 4px;
+  }
 }
