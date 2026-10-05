@@ -48,6 +48,35 @@ export const dateFormat = (dateInput, format = 'yyyy-MM-dd'):string => {
   return format.replace(reg, (match) => dateMap[match])
 }
 
+/** Calendar-only check; exchange holidays are intentionally not inferred here. */
+export const isWeekendDate = (date: string): boolean => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return false
+  }
+  const dateObj = new Date(`${date}T00:00:00Z`)
+  const day = dateObj.getUTCDay()
+  return day === 0 || day === 6
+}
+
+/** Returns true only when every date in the inclusive interval is a weekend. */
+export const hasOnlyWeekendDates = (startDate: string, endDate: string): boolean => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    return false
+  }
+  const current = new Date(`${startDate}T00:00:00Z`)
+  const end = new Date(`${endDate}T00:00:00Z`)
+  if (current.getTime() > end.getTime()) {
+    return false
+  }
+  while (current.getTime() <= end.getTime()) {
+    if (!isWeekendDate(current.toISOString().slice(0, 10))) {
+      return false
+    }
+    current.setUTCDate(current.getUTCDate() + 1)
+  }
+  return true
+}
+
 /**
  * 数字四舍五入同时保留几位小数
  * @param num 数字

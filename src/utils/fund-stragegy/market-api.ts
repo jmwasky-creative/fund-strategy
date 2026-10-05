@@ -17,6 +17,23 @@ export class MarketDataError extends Error {
   }
 }
 
+/** A successful response can still leave the requested market-data range uncovered. */
+export class MarketDataCoverageError extends Error {
+  source: string
+  code: string
+
+  constructor(source: string, requestedStart: string, requestedEnd: string, lastAvailableDate?: string) {
+    super(
+      `${source}覆盖状态未确认：请求 ${requestedStart} 至 ${requestedEnd}`
+      + `${lastAvailableDate ? `，最后可用行情为 ${lastAvailableDate}` : ''}`
+      + '。缺失日期可能是周末/假期休市或数据遗漏；当前没有可验证的市场日历，因此停止回测而不沿用前值。请核对日期范围，或在行情更新后重试。'
+    )
+    this.name = 'MarketDataCoverageError'
+    this.source = source
+    this.code = 'INCOMPLETE_COVERAGE'
+  }
+}
+
 const JSONP_ENDPOINTS: Record<string, string> = {
   'https://searchapi.eastmoney.com': '/api/suggest/get',
   'https://fundsuggest.eastmoney.com': '/FundSearch/api/FundSearchAPI.ashx'

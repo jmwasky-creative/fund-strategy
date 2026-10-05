@@ -9,7 +9,7 @@ jest.mock('../market-api', () => {
 })
 
 import { getFundData, getIndexFundData } from '../fetch-fund-data'
-import { loadFundHistoryScript, requestIndexKlines } from '../market-api'
+import { loadFundHistoryScript, MarketDataCoverageError, requestIndexKlines } from '../market-api'
 
 const loadFundHistoryMock = loadFundHistoryScript as jest.Mock
 const requestIndexMock = requestIndexKlines as jest.Mock
@@ -79,6 +79,43 @@ describe('market-data adapters', () => {
     expect(Object.keys(result).pop()).toBe('2020-01-22')
     expect(Object.keys(result)).not.toContain('2020-01-23')
     expect(requestIndexMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects an empty incremental response when cached index data does not cover a requested weekday', async () => {
+    const cache = {
+      '2020-01-01': { date: '2020-01-01', val: 100 },
+      '2020-01-02': { date: '2020-01-02', val: 101 },
+      '2020-01-03': { date: '2020-01-03', val: 102 }
+    }
+    localStorage.setItem('1.000001', JSON.stringify(cache))
+    requestIndexMock.mockResolvedValue({ rc: 0, data: { klines: [] } })
+
+    let coverageError: any
+    try {
+      await getIndexFundData({ code: '1.000001', range: ['2020-01-01', '2020-01-06'] })
+    } catch (error) {
+      coverageError = error
+    }
+    expect(coverageError).toBeInstanceOf(MarketDataCoverageError)
+    expect(coverageError).toMatchObject({
+      code: 'INCOMPLETE_COVERAGE',
+      message: expect.stringContaining('没有可验证的市场日历')
+    })
+    expect(requestIndexMock).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(localStorage.getItem('1.000001') || '{}')).toEqual(cache)
+  })
+
+  it('accepts an empty incremental response when the only uncovered dates are a normal weekend', async () => {
+    localStorage.setItem('1.000001', JSON.stringify({
+      '2020-01-01': { date: '2020-01-01', val: 100 },
+      '2020-01-02': { date: '2020-01-02', val: 101 },
+      '2020-01-03': { date: '2020-01-03', val: 102 }
+    }))
+    requestIndexMock.mockResolvedValue({ rc: 0, data: { klines: [] } })
+
+    const result = await getIndexFundData({ code: '1.000001', range: ['2020-01-01', '2020-01-05'] })
+    expect(Object.keys(result)).toEqual(['2020-01-01', '2020-01-02', '2020-01-03'])
+    expect(requestIndexMock).toHaveBeenCalledTimes(1)
   })
 
   it('recomputes cached MACD values when earlier index history is backfilled', async () => {

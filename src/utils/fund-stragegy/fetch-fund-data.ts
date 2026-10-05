@@ -1,7 +1,7 @@
 
 
-import { dateFormat, roundToFix } from '../common'
-import { loadFundHistoryScript, MarketDataError, requestIndexKlines, requestJSONP } from './market-api'
+import { dateFormat, hasOnlyWeekendDates, roundToFix } from '../common'
+import { loadFundHistoryScript, MarketDataCoverageError, MarketDataError, requestIndexKlines, requestJSONP } from './market-api'
 
 /**
  * macd 买卖临界点
@@ -101,6 +101,17 @@ export const getFundData = async (fundCodeInput: string | number, size: number |
 
   if (Object.keys(formatResult.all).length === 0) {
     throw new MarketDataError('基金净值', '没有可用于回测的历史净值')
+  }
+  if (Array.isArray(size)) {
+    const availableDates = Object.keys(formatResult.all).sort()
+    const latestDate = availableDates[availableDates.length - 1]
+    const requestedEnd = dateFormat(size[1])
+    const latestDateObj = new Date(`${latestDate}T00:00:00Z`)
+    latestDateObj.setUTCDate(latestDateObj.getUTCDate() + 1)
+    const firstUncoveredDate = latestDateObj.toISOString().slice(0, 10)
+    if (requestedEnd > latestDate && !hasOnlyWeekendDates(firstUncoveredDate, requestedEnd)) {
+      throw new MarketDataCoverageError('基金净值', dateFormat(size[0]), requestedEnd, latestDate)
+    }
   }
   return formatResult
 }
@@ -502,6 +513,17 @@ export const getIndexFundData = async (opt: {
   }, {} as Record<string, IndexData>)
   if (sortedDates.length === 0) {
     throw new MarketDataError('指数行情', '没有可用于回测的行情数据')
+  }
+
+  const requestedStart = dateFormat(rangeStart)
+  const requestedEnd = dateFormat(rangeEnd)
+  const lastAvailable = sortedDates[sortedDates.length - 1]
+  if (requestedEnd > lastAvailable) {
+    const firstUncovered = new Date(`${lastAvailable}T00:00:00Z`)
+    firstUncovered.setUTCDate(firstUncovered.getUTCDate() + 1)
+    if (!hasOnlyWeekendDates(firstUncovered.toISOString().slice(0, 10), requestedEnd)) {
+      throw new MarketDataCoverageError('指数行情', requestedStart, requestedEnd, lastAvailable)
+    }
   }
 
   resetIndexIndicators(mergedData)
