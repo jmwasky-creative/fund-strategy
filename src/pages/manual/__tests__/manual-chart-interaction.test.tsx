@@ -255,4 +255,64 @@ describe('manual sequence validation feedback', () => {
 
     tree.unmount()
   })
+
+  it('rejects same-day opposing signals and marks both list rows and chart markers with the reason', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const quotes = [{ date: '2024-01-02', val: 1.02 }]
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-02', endDate: '2024-01-31' },
+      quotes,
+      signals: [],
+      selectedDate: '2024-01-02',
+      chartDateChoices: [],
+      selectedSignalId: null,
+      nextSignalId: 1,
+      undo: null
+    })
+
+    buttonByText(tree, '添加买入点').props.onClick()
+    buttonByText(tree, '添加卖出点').props.onClick()
+
+    const text = renderedText(tree.root)
+    expect(text).toContain('需要处理的序列问题')
+    expect(text).toContain('系统不会猜测先后顺序')
+    expect(text).toContain('请调整信号日期或移除其中一个信号')
+    expect(text).not.toContain('买卖信号序列校验通过')
+    expect(invalidChartPoints(tree)).toHaveLength(2)
+    expect(page.getSequenceValidation().standardizedSequence).toBeNull()
+
+    tree.unmount()
+  })
+
+  it('shows an end-of-range open position as valid and unvalued in the summary, list, and chart label', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const quotes = [
+      { date: '2024-01-02', val: 1.02 },
+      { date: '2024-01-03', val: 1.03 }
+    ]
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-02', endDate: '2024-01-31' },
+      quotes,
+      signals: [{ id: 1, date: '2024-01-02', type: 'buy' }],
+      selectedDate: '2024-01-02',
+      chartDateChoices: [],
+      selectedSignalId: null,
+      nextSignalId: 2,
+      undo: null
+    })
+
+    const text = renderedText(tree.root)
+    expect(text).toContain('买卖信号序列校验通过')
+    expect(text).toContain('1 笔持仓仍未平仓')
+    expect(text).toContain('这里只输出未平仓状态，不计算或声称期末估值')
+    expect(text).toContain('期末未平仓（尚未估值）')
+    expect(page.getSequenceValidation().standardizedSequence.endingPositionStatus).toBe('open')
+    expect(tree.root.findAllByType('g').some(group =>
+      group.props.role === 'img' && String(group.props['aria-label']).includes('期末未平仓且尚未估值')
+    )).toBe(true)
+
+    tree.unmount()
+  })
 })

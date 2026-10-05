@@ -127,6 +127,17 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     return issuesBySignalId
   }
 
+  private getOpenSignalIds = (validation: ManualSequenceValidation): Set<number> => {
+    const openSignalIds = new Set<number>()
+    const sequence = validation.standardizedSequence
+    if (sequence) {
+      sequence.trades.filter(trade => trade.status === 'open').forEach(trade => {
+        openSignalIds.add(trade.entrySignal.id)
+      })
+    }
+    return openSignalIds
+  }
+
   private searchFunds = async (query: string, version: number) => {
     try {
       const fundOptions = await getFundInfo(query)
@@ -389,7 +400,9 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     signals.forEach(signal => {
       signalsByDate[signal.date] = (signalsByDate[signal.date] || []).concat(signal)
     })
-    const issuesBySignalId = this.getSignalIssuesById(this.getSequenceValidation())
+    const sequenceValidation = this.getSequenceValidation()
+    const issuesBySignalId = this.getSignalIssuesById(sequenceValidation)
+    const openSignalIds = this.getOpenSignalIds(sequenceValidation)
 
     return <div className={styles.chartWrap}>
       <svg
@@ -417,7 +430,9 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
               const signalIssues = issuesBySignalId[signal.id] || []
               const issueLabel = signalIssues.length > 0
                 ? `；校验提示：${signalIssues.map(issue => issue.message).join('；')}`
-                : '；序列校验通过'
+                : openSignalIds.has(signal.id)
+                  ? '；序列校验通过，期末未平仓且尚未估值'
+                  : '；序列校验通过'
               return <g
                 key={signal.id}
                 role="img"
@@ -495,6 +510,15 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     const selectedQuote = quotes.filter(item => item.date === selectedDate)[0]
     const sequenceValidation = this.getSequenceValidation()
     const issuesBySignalId = this.getSignalIssuesById(sequenceValidation)
+    const openSignalIds = this.getOpenSignalIds(sequenceValidation)
+    const openTradeCount = sequenceValidation.standardizedSequence
+      ? sequenceValidation.standardizedSequence.trades.filter(trade => trade.status === 'open').length
+      : 0
+    const validSequenceDescription = signals.length === 0
+      ? '当前没有点位；添加、移除或撤销后会自动重新校验。'
+      : openTradeCount > 0
+        ? `信号序列合法；${openTradeCount} 笔持仓仍未平仓。这里只输出未平仓状态，不计算或声称期末估值；估值由独立回测引擎范围处理。`
+        : '当前点位符合多头单持仓顺序约束。'
 
     return <main className={styles.workspace}>
       <header className={styles.intro}>
@@ -563,8 +587,8 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
             ? '买卖信号序列校验通过'
             : `有 ${sequenceValidation.issues.length} 个需要处理的序列问题`}
           description={sequenceValidation.isValid
-            ? (signals.length === 0 ? '当前没有点位；添加、移除或撤销后会自动重新校验。' : '当前点位符合多头单持仓顺序约束。')
-            : '请按清单中的具体提示修正。点位不会被自动丢弃或重排；未决规则会明确阻止校验通过。'}
+            ? validSequenceDescription
+            : '请按清单中的具体提示修正。点位不会被自动丢弃或重排；同日相反信号必须由用户调整，系统不会猜测顺序。'}
         />
         <p className={styles.engineNotice}>当前手动工作区尚无回测执行入口；本次只校验信号顺序，不会启动交易计算或发送真实订单。</p>
       </div> : null}
@@ -636,7 +660,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
                           ? <ul id={`signal-validation-${signal.id}`} className={styles.validationIssueList}>
                             {signalIssues.map(issue => <li key={issue.code} className={styles.validationIssue}>{issue.message}</li>)}
                           </ul>
-                          : <span className={styles.validSignal}>序列有效</span>}
+                          : <span className={styles.validSignal}>{openSignalIds.has(signal.id) ? '期末未平仓（尚未估值）' : '序列有效'}</span>}
                       </td>
                       <td><Button size="small" onClick={event => this.removeSignal(signal.id, event)}>移除</Button></td>
                     </tr>
