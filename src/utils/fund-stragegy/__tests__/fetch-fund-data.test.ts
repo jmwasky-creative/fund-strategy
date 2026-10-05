@@ -118,6 +118,66 @@ describe('market-data adapters', () => {
     expect(requestIndexMock).toHaveBeenCalledTimes(1)
   })
 
+  it('rejects an internal weekday gap for a selected non-default index even when the requested end date has data', async () => {
+    const selectedIndexCode = '2.399001'
+    const cache = {
+      '2020-01-06': { date: '2020-01-06', val: 100 },
+      '2020-01-07': { date: '2020-01-07', val: 101 },
+      '2020-01-09': { date: '2020-01-09', val: 103 },
+      '2020-01-10': { date: '2020-01-10', val: 104 }
+    }
+    localStorage.setItem(selectedIndexCode, JSON.stringify(cache))
+
+    let coverageError: any
+    try {
+      await getIndexFundData({ code: selectedIndexCode, range: ['2020-01-06', '2020-01-10'] })
+    } catch (error) {
+      coverageError = error
+    }
+
+    expect(coverageError).toBeInstanceOf(MarketDataCoverageError)
+    expect(coverageError).toMatchObject({
+      code: 'INCOMPLETE_COVERAGE',
+      message: expect.stringContaining('区间内首个缺失工作日为 2020-01-08')
+    })
+    expect(coverageError.message).toContain('最后可用行情为 2020-01-10')
+    expect(requestIndexMock).not.toHaveBeenCalled()
+    expect(JSON.parse(localStorage.getItem(selectedIndexCode) || '{}')).toEqual(cache)
+  })
+
+  it('accepts a complete weekday sequence for a selected non-default index', async () => {
+    requestIndexMock.mockResolvedValue({
+      rc: 0,
+      data: {
+        klines: [
+          '2020-01-06,100,100,100,100,1,1',
+          '2020-01-07,101,101,101,101,1,1',
+          '2020-01-08,102,102,102,102,1,1',
+          '2020-01-09,103,103,103,103,1,1',
+          '2020-01-10,104,104,104,104,1,1'
+        ]
+      }
+    })
+
+    const result = await getIndexFundData({ code: '2.399001', range: ['2020-01-06', '2020-01-10'] })
+    expect(Object.keys(result)).toEqual(['2020-01-06', '2020-01-07', '2020-01-08', '2020-01-09', '2020-01-10'])
+  })
+
+  it('does not treat missing weekend dates between covered weekdays as incomplete', async () => {
+    requestIndexMock.mockResolvedValue({
+      rc: 0,
+      data: {
+        klines: [
+          '2020-01-03,100,100,100,100,1,1',
+          '2020-01-06,101,101,101,101,1,1'
+        ]
+      }
+    })
+
+    const result = await getIndexFundData({ code: '2.399001', range: ['2020-01-03', '2020-01-06'] })
+    expect(Object.keys(result)).toEqual(['2020-01-03', '2020-01-06'])
+  })
+
   it('recomputes cached MACD values when earlier index history is backfilled', async () => {
     localStorage.setItem('1.000001', JSON.stringify({
       '2020-01-02': { date: '2020-01-02', val: 102, ema12: 999, ema26: 999, diff: 999, dea: 999, macd: 999 },
@@ -125,7 +185,7 @@ describe('market-data adapters', () => {
     }))
     requestIndexMock.mockResolvedValue({
       rc: 0,
-      data: { klines: ['2020-01-01,100,100,100,100,1,1'] }
+      data: { klines: ['2019-12-31,100,100,100,100,1,1', '2020-01-01,100,100,100,100,1,1'] }
     })
 
     const result = await getIndexFundData({ code: '1.000001', range: ['2019-12-31', '2020-01-03'] })

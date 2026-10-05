@@ -1,6 +1,6 @@
 
 
-import { dateFormat, hasOnlyWeekendDates, roundToFix } from '../common'
+import { dateFormat, hasOnlyWeekendDates, isWeekendDate, roundToFix } from '../common'
 import { loadFundHistoryScript, MarketDataCoverageError, MarketDataError, requestIndexKlines, requestJSONP } from './market-api'
 
 /**
@@ -524,6 +524,16 @@ export const getIndexFundData = async (opt: {
     if (!hasOnlyWeekendDates(firstUncovered.toISOString().slice(0, 10), requestedEnd)) {
       throw new MarketDataCoverageError('指数行情', requestedStart, requestedEnd, lastAvailable)
     }
+  }
+
+  const currentDate = new Date(`${requestedStart}T00:00:00Z`)
+  const endDate = new Date(`${requestedEnd}T00:00:00Z`)
+  while (currentDate.getTime() <= endDate.getTime()) {
+    const date = currentDate.toISOString().slice(0, 10)
+    if (!isWeekendDate(date) && !Object.prototype.hasOwnProperty.call(mergedData, date)) {
+      throw new MarketDataCoverageError('指数行情', requestedStart, requestedEnd, lastAvailable, date)
+    }
+    currentDate.setUTCDate(currentDate.getUTCDate() + 1)
   }
 
   resetIndexIndicators(mergedData)

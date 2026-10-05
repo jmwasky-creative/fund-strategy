@@ -22,11 +22,12 @@ export class MarketDataCoverageError extends Error {
   source: string
   code: string
 
-  constructor(source: string, requestedStart: string, requestedEnd: string, lastAvailableDate?: string) {
+  constructor(source: string, requestedStart: string, requestedEnd: string, lastAvailableDate?: string, firstMissingWeekday?: string) {
     super(
       `${source}覆盖状态未确认：请求 ${requestedStart} 至 ${requestedEnd}`
       + `${lastAvailableDate ? `，最后可用行情为 ${lastAvailableDate}` : ''}`
-      + '。缺失日期可能是周末/假期休市或数据遗漏；当前没有可验证的市场日历，因此停止回测而不沿用前值。请核对日期范围，或在行情更新后重试。'
+      + `${firstMissingWeekday ? `，区间内首个缺失工作日为 ${firstMissingWeekday}` : ''}`
+      + '。缺失日期可能是周末/假期休市或数据遗漏；当前没有可验证的市场日历，因此覆盖状态未确认并停止回测，不沿用前值作为补齐数据。请核对日期范围，或在行情更新后重试。'
     )
     this.name = 'MarketDataCoverageError'
     this.source = source
