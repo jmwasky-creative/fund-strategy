@@ -3,7 +3,8 @@ import {
   getSignalsInvalidatedByQuery,
   hasManualQuoteDate,
   ManualSignal,
-  sortManualSignals
+  sortManualSignals,
+  validateManualSignalSequence
 } from '../manual-model'
 import { getManualChartHitCandidates, plotManualHistory } from '../manual-chart-model'
 
@@ -117,5 +118,94 @@ describe('manual backtest model', () => {
     expect(edgeClickX - november10.x).toBeCloseTo(5.2, 6)
     expect(getManualChartHitCandidates(points, edgeClickX, november10.y, '2025-11-10', 1)
       .map(point => point.date)).toEqual(expect.arrayContaining(['2025-11-10', '2025-11-11']))
+  })
+})
+
+describe('manual signal sequence validation', () => {
+  it('accepts an empty sequence and a complete single long trade', () => {
+    expect(validateManualSignalSequence([])).toEqual({ isValid: true, issues: [] })
+    expect(validateManualSignalSequence([
+      { id: 1, date: '2024-01-02', type: 'buy' },
+      { id: 2, date: '2024-01-04', type: 'sell' }
+    ])).toEqual({ isValid: true, issues: [] })
+  })
+
+  it('marks a sell while flat and identifies the offending point', () => {
+    const result = validateManualSignalSequence([
+      { id: 7, date: '2024-01-02', type: 'sell' }
+    ])
+
+    expect(result.isValid).toBe(false)
+    expect(result.issues).toEqual([expect.objectContaining({
+      signalId: 7,
+      code: 'sell-while-flat'
+    })])
+    expect(result.issues[0].message).toContain('为空仓')
+  })
+
+  it('marks a second buy while a long position is open', () => {
+    const result = validateManualSignalSequence([
+      { id: 1, date: '2024-01-02', type: 'buy' },
+      { id: 2, date: '2024-01-03', type: 'buy' },
+      { id: 3, date: '2024-01-04', type: 'sell' }
+    ])
+
+    expect(result.issues).toEqual([expect.objectContaining({
+      signalId: 2,
+      code: 'buy-while-holding'
+    })])
+  })
+
+  it('marks a consecutive sell after a completed trade', () => {
+    const result = validateManualSignalSequence([
+      { id: 1, date: '2024-01-02', type: 'buy' },
+      { id: 2, date: '2024-01-03', type: 'sell' },
+      { id: 3, date: '2024-01-04', type: 'sell' }
+    ])
+
+    expect(result.issues).toEqual([expect.objectContaining({
+      signalId: 3,
+      code: 'sell-while-flat'
+    })])
+  })
+
+  it('does not guess the order of same-day opposing signals or the later holding state', () => {
+    const result = validateManualSignalSequence([
+      { id: 1, date: '2024-01-02', type: 'buy' },
+      { id: 2, date: '2024-01-03', type: 'sell' },
+      { id: 3, date: '2024-01-03', type: 'buy' },
+      { id: 4, date: '2024-01-04', type: 'sell' }
+    ])
+
+    expect(result.isValid).toBe(false)
+    expect(result.issues.map(issue => [issue.signalId, issue.code])).toEqual([
+      [2, 'same-day-opposite-signals'],
+      [3, 'same-day-opposite-signals'],
+      [4, 'state-unknown-after-ambiguous-day']
+    ])
+  })
+
+  it('surfaces an open position at the selected terminal date as an unresolved decision', () => {
+    const result = validateManualSignalSequence([
+      { id: 11, date: '2024-01-02', type: 'buy' }
+    ], '2024-01-31')
+
+    expect(result.issues).toEqual([expect.objectContaining({
+      signalId: 11,
+      code: 'open-position-at-end'
+    })])
+    expect(result.issues[0].message).toContain('2024-01-31')
+    expect(result.issues[0].message).toContain('待确认')
+  })
+
+  it('restores a valid state when an invalid input is corrected', () => {
+    const invalid = [{ id: 1, date: '2024-01-02', type: 'sell' as 'sell' }]
+    const corrected = [
+      { id: 1, date: '2024-01-02', type: 'buy' as 'buy' },
+      { id: 2, date: '2024-01-03', type: 'sell' as 'sell' }
+    ]
+
+    expect(validateManualSignalSequence(invalid).isValid).toBe(false)
+    expect(validateManualSignalSequence(corrected)).toEqual({ isValid: true, issues: [] })
   })
 })
