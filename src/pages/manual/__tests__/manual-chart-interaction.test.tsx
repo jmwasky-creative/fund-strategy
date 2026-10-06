@@ -80,6 +80,12 @@ const invalidChartPoints = (tree: ReactTestRenderer): ReactTestInstance[] => tre
   point.props.role === 'button' && String(point.props['aria-label']).indexOf('校验提示') >= 0
 )
 
+const createChartSvg = (scale: number = 1, offsetX: number = 0) => ({
+  getScreenCTM: () => ({
+    inverse: () => ({ a: 1 / scale, e: -offsetX / scale })
+  })
+})
+
 const flushReplayTimers = async () => {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     jest.runOnlyPendingTimers()
@@ -100,6 +106,8 @@ const setReadyReplayState = (page: any) => page.setState({
   ],
   signals: [{ id: 1, date: '2024-01-02', type: 'buy' }],
   selectedDate: '2024-01-02',
+  latchedQuote: { date: '2024-01-02', val: 1.02 },
+  selectionSource: 'chart',
   nextSignalId: 2,
   replayConfig: {
     initialCash: '1000',
@@ -119,7 +127,7 @@ afterEach(() => {
 })
 
 describe('manual chart date selection', () => {
-  it('keeps overlapping real NAV dates ambiguous until chosen, then confirms buy or sell on that exact point', () => {
+  it('selects by X alone and confirms buy or sell using the NAV latched before the cursor moves', () => {
     const tree = renderer.create(<ManualBacktestPage />)
     const page = tree.getInstance() as any
     const quotes = createDenseQuotes()
@@ -128,7 +136,6 @@ describe('manual chart date selection', () => {
       quotes,
       signals: [],
       selectedDate: '',
-      chartDateChoices: [],
       selectedSignalId: null,
       nextSignalId: 1,
       undo: null
@@ -138,43 +145,44 @@ describe('manual chart date selection', () => {
       marker.props['aria-label'] === '选择真实净值日期 2025-11-10，单位净值 1.1210'
     )[0]
     const chart = tree.root.findAllByType('svg').filter(svg => svg.props['aria-label'])[0]
-    const chartSvg = {
-      getScreenCTM: () => ({ inverse: () => ({ scale: 1 / 0.75, translateX: -40 / 0.75, translateY: -15 / 0.75 }) }),
-      createSVGPoint: () => {
-        const pointer: any = { x: 0, y: 0 }
-        pointer.matrixTransform = (matrix: any) => ({
-          x: pointer.x * matrix.scale + matrix.translateX,
-          y: pointer.y * matrix.scale + matrix.translateY
-        })
-        return pointer
-      }
-    }
+    const chartSvg = createChartSvg(0.75, 40)
 
     chart.props.onClick({
       nativeEvent: { detail: 1 },
       currentTarget: chartSvg,
       clientX: selectedMarker.props.cx * 0.75 + 40,
-      clientY: selectedMarker.props.cy * 0.75 + 15
+      clientY: -5000
     })
 
-    expect(page.state.selectedDate).toBe('')
-    expect(page.state.signals).toEqual([])
-    expect(page.state.chartDateChoices).toEqual(expect.arrayContaining(['2025-11-10', '2025-11-11']))
-    expect(buttonByText(tree, '2025-11-10 · 净值 1.1210')).toBeTruthy()
-    expect(buttonByText(tree, '2025-11-11 · 净值 1.1210')).toBeTruthy()
-    expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(true)
-    expect(buttonByText(tree, '确认卖出信号').props.disabled).toBe(true)
-
-    buttonByText(tree, '2025-11-10 · 净值 1.1210').props.onClick()
     expect(page.state.selectedDate).toBe('2025-11-10')
-    expect(page.state.selectedDate).not.toBe('2025-11-11')
-    expect(page.state.chartDateChoices).toEqual([])
+    expect(page.state.latchedQuote).toEqual({ date: '2025-11-10', val: 1.121 })
     expect(page.state.signals).toEqual([])
     expect(renderedText(tree.root)).toContain('2025-11-10　单位净值：1.1210')
     expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(false)
 
+    chart.props.onMouseMove({
+      currentTarget: chartSvg,
+      clientX: selectedMarker.props.cx * 0.75 + 40,
+      clientY: 5000
+    })
+    expect(page.state.selectedDate).toBe('2025-11-10')
+    expect(page.state.latchedQuote).toEqual({ date: '2025-11-10', val: 1.121 })
+
     buttonByText(tree, '确认买入信号').props.onClick()
     expect(page.state.selectedDate).toBe('2025-11-10')
+    expect(page.state.signals.map((signal: any) => [signal.date, signal.type])).toEqual([['2025-11-10', 'buy']])
+    // Moving the vertical locator elsewhere only updates hover; it cannot drift the latched confirmation target.
+    const otherMarker = tree.root.findAllByType('circle').filter(marker =>
+      marker.props['aria-label'] === '选择真实净值日期 2025-11-11，单位净值 1.1210'
+    )[0]
+    chart.props.onMouseMove({
+      currentTarget: chartSvg,
+      clientX: otherMarker.props.cx * 0.75 + 40,
+      clientY: -9000
+    })
+    expect(page.state.hoveredDate).toBe('2025-11-11')
+    expect(page.state.selectedDate).toBe('2025-11-10')
+    expect(page.state.latchedQuote).toEqual({ date: '2025-11-10', val: 1.121 })
     buttonByText(tree, '确认卖出信号').props.onClick()
     expect(page.state.signals.map((signal: any) => [signal.date, signal.type])).toEqual([
       ['2025-11-10', 'buy'],
@@ -254,6 +262,8 @@ describe('manual chart date selection', () => {
       quotes,
       signals: [],
       selectedDate: '2024-01-02',
+      latchedQuote: { date: '2024-01-02', val: 1.02 },
+      selectionSource: 'chart',
       selectedSignalId: null,
       nextSignalId: 1,
       undo: null
@@ -294,7 +304,7 @@ describe('manual chart date selection', () => {
     tree.unmount()
   })
 
-  it('keeps the selected date when clicking its rendered marker stroke beside an equal-NAV neighbor', () => {
+  it('follows the nearest horizontal date even when the clicked X is within a neighboring marker stroke', () => {
     const tree = renderer.create(<ManualBacktestPage />)
     const page = tree.getInstance() as any
     const quotes = createDenseQuotes()
@@ -302,9 +312,7 @@ describe('manual chart date selection', () => {
       activeQuery: { fundCode: '260108', startDate: quotes[0].date, endDate: quotes[quotes.length - 1].date },
       quotes,
       signals: [],
-      selectedDate: '2025-11-10',
-      selectionSource: 'chart',
-      chartDateChoices: [],
+      selectedDate: '',
       selectedSignalId: null,
       nextSignalId: 1,
       undo: null
@@ -320,49 +328,24 @@ describe('manual chart date selection', () => {
     const chart = tree.root.findAllByType('svg').filter(svg => svg.props['aria-label'])[0]
     const screenScale = 0.75
     const clickOffset = 5.2
-    const chartSvg = {
-      getScreenCTM: () => ({
-        a: screenScale,
-        b: 0,
-        c: 0,
-        d: screenScale,
-        inverse: () => ({
-          scale: 1 / screenScale,
-          translateX: -40 / screenScale,
-          translateY: -15 / screenScale
-        })
-      }),
-      createSVGPoint: () => {
-        const pointer: any = { x: 0, y: 0 }
-        pointer.matrixTransform = (matrix: any) => ({
-          x: pointer.x * matrix.scale + matrix.translateX,
-          y: pointer.y * matrix.scale + matrix.translateY
-        })
-        return pointer
-      }
-    }
+    const chartSvg = createChartSvg(screenScale, 40)
 
-    expect(selectedMarker.props.r).toBe(5)
-    expect(selectedRing.props.r).toBe(9)
-    // The non-scaling 1.5px point stroke extends past r=5; 5.2 viewBox units is still visible.
-    expect(clickOffset).toBeLessThan(selectedMarker.props.r + 1.5 / 2 / screenScale)
+    expect(selectedMarker.props.r).toBe(3.5)
+    expect(selectedRing).toBeUndefined()
 
     chart.props.onClick({
       nativeEvent: { detail: 1 },
       currentTarget: chartSvg,
       clientX: (selectedMarker.props.cx + clickOffset) * screenScale + 40,
-      clientY: selectedMarker.props.cy * screenScale + 15
+      clientY: 9000
     })
 
-    expect(page.state.selectedDate).toBe('2025-11-10')
-    expect(page.state.chartDateChoices).toEqual(expect.arrayContaining(['2025-11-10', '2025-11-11']))
+    expect(page.state.selectedDate).toBe('2025-11-11')
+    expect(page.state.latchedQuote).toEqual({ date: '2025-11-11', val: 1.121 })
     expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(false)
     expect(buttonByText(tree, '确认卖出信号').props.disabled).toBe(false)
     expect(page.state.signals).toEqual([])
 
-    buttonByText(tree, '2025-11-11 · 净值 1.1210').props.onClick()
-    expect(page.state.selectedDate).toBe('2025-11-11')
-    expect(page.state.chartDateChoices).toEqual([])
     expect(page.state.signals).toEqual([])
     buttonByText(tree, '确认买入信号').props.onClick()
     expect(page.state.signals.map((signal: any) => [signal.date, signal.type])).toEqual([['2025-11-11', 'buy']])
@@ -393,23 +376,7 @@ describe('manual point-mode chart workflow', () => {
     })
 
     const chart = tree.root.findAllByType('svg').filter(svg => svg.props['aria-label'])[0]
-    const chartSvg = {
-      getScreenCTM: () => ({
-        a: 1,
-        b: 0,
-        c: 0,
-        d: 1,
-        inverse: () => ({ scale: 1, translateX: 0, translateY: 0 })
-      }),
-      createSVGPoint: () => {
-        const pointer: any = { x: 0, y: 0 }
-        pointer.matrixTransform = (matrix: any) => ({
-          x: pointer.x * matrix.scale + matrix.translateX,
-          y: pointer.y * matrix.scale + matrix.translateY
-        })
-        return pointer
-      }
-    }
+    const chartSvg = createChartSvg()
     const quotePoint = () => tree.root.findAllByType('circle').filter(circle =>
       typeof circle.props['aria-label'] === 'string'
         && circle.props['aria-label'].includes('2024-01-04')
@@ -439,16 +406,16 @@ describe('manual point-mode chart workflow', () => {
       nativeEvent: { detail: 1 },
       currentTarget: chartSvg,
       clientX: (firstPoint.props.cx + realPoint.props.cx) / 2,
-      clientY: (firstPoint.props.cy + realPoint.props.cy) / 2
+      clientY: 12000
     })
-    expect(page.state.selectedDate).toBe('')
+    expect(page.state.selectedDate).toBe('2024-01-01')
     page.selectDate('2024-01-08')
-    expect(page.state.selectedDate).toBe('')
+    expect(page.state.selectedDate).toBe('2024-01-01')
 
-    chart.props.onMouseMove({ currentTarget: chartSvg, clientX: quotePoint().props.cx, clientY: quotePoint().props.cy })
+    chart.props.onMouseMove({ currentTarget: chartSvg, clientX: quotePoint().props.cx, clientY: -12000 })
     expect(renderedText(tree.root)).toContain('2024-01-04 · 单位净值 1.0400')
-    expect(page.state.selectedDate).toBe('')
-    expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(true)
+    expect(page.state.selectedDate).toBe('2024-01-01')
+    expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(false)
     expect(tree.root.findAllByType('g').some(group =>
       group.props.role === 'status' && String(group.props['aria-label']).includes('2024-01-04')
     )).toBe(true)
@@ -464,6 +431,10 @@ describe('manual point-mode chart workflow', () => {
     const selectedCrosshair = selectedReadout.findByType('line')
     expect(selectedCrosshair.props.x1).toBe(realPoint.props.cx)
     expect(selectedCrosshair.props.x2).toBe(realPoint.props.cx)
+    chart.props.onMouseMove({ currentTarget: chartSvg, clientX: firstPoint.props.cx, clientY: 12000 })
+    expect(page.state.hoveredDate).toBe('2024-01-01')
+    expect(page.state.selectedDate).toBe('2024-01-04')
+    expect(page.state.latchedQuote).toEqual({ date: '2024-01-04', val: 1.04 })
     buttonByText(tree, '确认买入信号').props.onClick()
     expect(page.state.signals.map((signal: any) => [signal.date, signal.type])).toEqual([['2024-01-04', 'buy']])
     expect(page.state.selectedDate).toBe('2024-01-04')
@@ -477,7 +448,12 @@ describe('manual point-mode chart workflow', () => {
     expect(renderedText(tree.root)).toContain('2024-01-08')
     expect(page.state.signals[0].date).toBe('2024-01-04')
 
-    page.setState({ selectedSignalId: null, selectedDate: '2024-01-01' })
+    page.setState({
+      selectedSignalId: null,
+      selectedDate: '2024-01-01',
+      latchedQuote: { date: '2024-01-01', val: 1.00 },
+      selectionSource: 'chart'
+    })
     const signalRow = tree.root.findAllByType('tr').filter(row => renderedText(row).includes('2024-01-04'))[0]
     signalRow.props.onClick()
     expect(page.state.selectedSignalId).toBe(1)
@@ -525,7 +501,8 @@ describe('manual sequence validation feedback', () => {
       quotes,
       signals: [],
       selectedDate: '2024-01-02',
-      chartDateChoices: [],
+      latchedQuote: { date: '2024-01-02', val: 1.02 },
+      selectionSource: 'chart',
       selectedSignalId: null,
       nextSignalId: 1,
       undo: null
@@ -559,7 +536,8 @@ describe('manual sequence validation feedback', () => {
       quotes,
       signals: [],
       selectedDate: '2024-01-02',
-      chartDateChoices: [],
+      latchedQuote: { date: '2024-01-02', val: 1.02 },
+      selectionSource: 'chart',
       selectedSignalId: null,
       nextSignalId: 1,
       undo: null
@@ -591,7 +569,8 @@ describe('manual sequence validation feedback', () => {
       quotes,
       signals: [{ id: 1, date: '2024-01-02', type: 'buy' }],
       selectedDate: '2024-01-02',
-      chartDateChoices: [],
+      latchedQuote: { date: '2024-01-02', val: 1.02 },
+      selectionSource: 'chart',
       selectedSignalId: null,
       nextSignalId: 2,
       undo: null

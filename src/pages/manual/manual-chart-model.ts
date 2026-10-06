@@ -14,12 +14,8 @@ export const MANUAL_CHART_LAYOUT = {
   plotBottom: 292
 }
 
-// Keep real NAV hit targets comfortably clickable at any rendered SVG scale.
-// Candidate radii also include visible vector-effect strokes and selected rings.
-export const MANUAL_CHART_HIT_RADIUS_SCREEN_PIXELS = 12
 export const MANUAL_CHART_POINT_RADIUS = 3.5
 export const MANUAL_CHART_POINT_STROKE_WIDTH = 1.5
-export const MANUAL_CHART_FOCUSED_POINT_STROKE_WIDTH = 2.5
 export const MANUAL_CHART_SELECTED_POINT_RADIUS = 5
 export const MANUAL_CHART_SELECTED_RING_RADIUS = 9
 export const MANUAL_CHART_SELECTED_RING_STROKE_WIDTH = 2
@@ -47,38 +43,26 @@ export const plotManualHistory = (quotes: ManualQuote[]): ManualPlotPoint[] => {
 }
 
 /**
- * Return every visibly plausible point under a chart click, nearest first.
- * Callers must ask the user to choose when multiple dates overlap; they must
- * not infer intent from SVG paint order or silently pick a neighboring date.
+ * Resolve a chart position from its horizontal coordinate alone.
+ * Only supplied real NAV points can be returned; an exact tie selects the
+ * earlier trading date so the result is deterministic and stable.
  */
-export const getManualChartHitCandidates = (
+export const getNearestManualChartPointByX = (
   points: ManualPlotPoint[],
-  x: number,
-  y: number,
-  selectedDate: string = '',
-  viewBoxUnitsPerScreenPixel: number = 1
-): ManualPlotPoint[] => {
-  const safeViewBoxUnitsPerScreenPixel = Number.isFinite(viewBoxUnitsPerScreenPixel) && viewBoxUnitsPerScreenPixel > 0
-    ? viewBoxUnitsPerScreenPixel
-    : 1
+  x: number
+): ManualPlotPoint | null => {
+  if (points.length === 0 || !Number.isFinite(x)) {
+    return null
+  }
 
-  return points
-    .map((point, index) => ({
-      point,
-      index,
-      distanceSquared: (point.x - x) * (point.x - x) + (point.y - y) * (point.y - y),
-      hitRadius: Math.max(
-        MANUAL_CHART_HIT_RADIUS_SCREEN_PIXELS * safeViewBoxUnitsPerScreenPixel,
-        MANUAL_CHART_POINT_RADIUS + MANUAL_CHART_FOCUSED_POINT_STROKE_WIDTH / 2 * safeViewBoxUnitsPerScreenPixel,
-        point.date === selectedDate
-          ? Math.max(
-            MANUAL_CHART_SELECTED_POINT_RADIUS + MANUAL_CHART_FOCUSED_POINT_STROKE_WIDTH / 2 * safeViewBoxUnitsPerScreenPixel,
-            MANUAL_CHART_SELECTED_RING_RADIUS + MANUAL_CHART_SELECTED_RING_STROKE_WIDTH / 2 * safeViewBoxUnitsPerScreenPixel
-          )
-          : 0
-      )
-    }))
-    .filter(candidate => candidate.distanceSquared <= candidate.hitRadius * candidate.hitRadius)
-    .sort((left, right) => left.distanceSquared - right.distanceSquared || left.index - right.index)
-    .map(candidate => candidate.point)
+  return points.reduce((nearest, point) => {
+    const pointDistance = Math.abs(point.x - x)
+    const nearestDistance = Math.abs(nearest.x - x)
+    const distanceTolerance = Number.EPSILON * Math.max(1, Math.abs(x), Math.abs(point.x), Math.abs(nearest.x)) * 4
+    const distancesAreTied = Math.abs(pointDistance - nearestDistance) <= distanceTolerance
+    return pointDistance < nearestDistance - distanceTolerance
+      || (distancesAreTied && point.date < nearest.date)
+      ? point
+      : nearest
+  })
 }

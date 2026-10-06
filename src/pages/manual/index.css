@@ -378,25 +378,6 @@
   gap: 5px;
 }
 
-.chartDisambiguation {
-  margin: 10px 0 14px;
-  padding: 12px;
-  border: 1px solid #faad14;
-  border-radius: 4px;
-  background: #fffbe6;
-  color: #614700;
-}
-
-.chartDisambiguation p {
-  margin: 0 0 8px;
-}
-
-.chartDateOptions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
 .buyLegend,
 .sellLegend {
   display: inline-block;
