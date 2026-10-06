@@ -22,6 +22,13 @@ import {
   validateManualSignalSequence
 } from './manual-model'
 import {
+  canAdvanceManualAsOf,
+  createManualAsOfSnapshot,
+  getInitialManualAsOfDate,
+  getNextManualAsOfDate,
+  ManualAsOfSnapshot
+} from './manual-asof-model'
+import {
   ManualReplayConfig,
   ManualReplayResult,
   ManualReplayCancelledError,
@@ -91,7 +98,9 @@ interface ManualWorkspaceState {
   searchingFunds: boolean
   fundSearchError: string
   activeQuery: ManualQuery | null
+  historyQuotes: ManualQuote[]
   quotes: ManualQuote[]
+  asOfDate: string
   signals: ManualSignal[]
   selectedDate: string
   chartDateChoices: string[]
@@ -123,6 +132,7 @@ interface ManualReplayCancellation {
 export default class ManualBacktestPage extends Component<{}, ManualWorkspaceState> {
   private searchTimeout: any = null
   private searchVersion = 0
+  private historyRequestId = 0
   private replayRequestId = 0
   private replayStartTimer: any = null
   private replayExecutionPending = false
@@ -137,7 +147,9 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     searchingFunds: false,
     fundSearchError: '',
     activeQuery: null,
+    historyQuotes: [],
     quotes: [],
+    asOfDate: '',
     signals: [],
     selectedDate: '',
     chartDateChoices: [],
@@ -166,6 +178,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
   }
 
   componentWillUnmount() {
+    this.historyRequestId += 1
     if (this.searchTimeout) {
       clearTimeout(this.searchTimeout)
     }
@@ -209,10 +222,31 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     })
   }
 
-  private getSequenceValidation = (): ManualSequenceValidation => validateManualSignalSequence(
-    this.state.signals,
-    this.state.activeQuery ? this.state.activeQuery.endDate : undefined
-  )
+  private getSequenceValidation = (): ManualSequenceValidation => {
+    const snapshot = this.getCurrentAsOfSnapshot()
+    return snapshot
+      ? snapshot.sequenceValidation
+      : validateManualSignalSequence(this.state.signals)
+  }
+
+  private getCurrentAsOfSnapshot = (): ManualAsOfSnapshot | null => {
+    const query = this.state.activeQuery
+    if (!query) {
+      return null
+    }
+    const requestedAsOfDate = this.state.asOfDate || query.endDate
+    const sourceQuotes = this.state.historyQuotes.length > 0 ? this.state.historyQuotes : this.state.quotes
+    return createManualAsOfSnapshot(sourceQuotes, this.state.signals, query, requestedAsOfDate)
+  }
+
+  private canAdvanceAsOf = (): boolean => {
+    const query = this.state.activeQuery
+    if (!query) {
+      return false
+    }
+    const currentAsOfDate = this.state.asOfDate || query.endDate
+    return canAdvanceManualAsOf(query.startDate, currentAsOfDate, query.endDate)
+  }
 
   private getSignalIssuesById = (validation: ManualSequenceValidation): { [key: number]: ManualSequenceIssue[] } => {
     const issuesBySignalId: { [key: number]: ManualSequenceIssue[] } = {}
@@ -276,17 +310,19 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
   private handleFundChange = (value: string) => {
     const draftFundCode = String(value || '')
     if (draftFundCode !== this.state.draftFundCode) {
+      this.historyRequestId += 1
       this.invalidateReplayInputs()
     }
-    this.setState({ draftFundCode, error: '' })
+    this.setState({ draftFundCode, error: '', loading: false })
   }
 
   private handleDateChange = (field: 'draftStartDate' | 'draftEndDate') => (event: React.ChangeEvent<HTMLInputElement>) => {
     const value = event.currentTarget.value
     if (value !== this.state[field]) {
+      this.historyRequestId += 1
       this.invalidateReplayInputs()
     }
-    this.setState({ [field]: value, error: '' } as Pick<ManualWorkspaceState, 'draftStartDate' | 'draftEndDate' | 'error'>)
+    this.setState({ [field]: value, error: '', loading: false } as Pick<ManualWorkspaceState, 'draftStartDate' | 'draftEndDate' | 'error' | 'loading'>)
   }
 
   private submitQuery = (event?: FormEvent<HTMLFormElement>) => {
@@ -311,9 +347,13 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       return
     }
 
+    const requestId = ++this.historyRequestId
     this.invalidateReplayInputs()
     this.setState({ loading: true, error: '', chartDateChoices: [] })
     loadManualHistory(query.fundCode, query.startDate, query.endDate).then(quotes => {
+      if (requestId !== this.historyRequestId) {
+        return
+      }
       const previousFund = this.state.activeQuery ? this.state.activeQuery.fundCode : ''
       const invalidSignals = getSignalsInvalidatedByQuery(
         this.state.signals,
@@ -330,6 +370,9 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       }
       this.commitSelection(query, quotes, [])
     }).catch(error => {
+      if (requestId !== this.historyRequestId) {
+        return
+      }
       this.setState({
         loading: false,
         error: errorMessage(error)
@@ -339,21 +382,25 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
 
   private commitSelection = (query: ManualQuery, quotes: ManualQuote[], invalidSignals: ManualSignal[]) => {
     const invalidIds = new Set(invalidSignals.map(signal => signal.id))
+    const asOfDate = getInitialManualAsOfDate(query.startDate, query.endDate)
     this.setState((previousState) => {
       const signals = previousState.signals.filter(signal => !invalidIds.has(signal.id))
+      const snapshot = createManualAsOfSnapshot(quotes, signals, query, asOfDate)
       const selectedSignalId = previousState.selectedSignalId !== null
-        && signals.some(signal => signal.id === previousState.selectedSignalId)
+        && snapshot.signals.some(signal => signal.id === previousState.selectedSignalId)
         ? previousState.selectedSignalId
         : null
-      const selectedDate = previousState.selectedDate && hasManualQuoteDate(quotes, previousState.selectedDate)
+      const selectedDate = previousState.selectedDate && hasManualQuoteDate(snapshot.quotes, previousState.selectedDate)
         ? previousState.selectedDate
-        : (quotes.length > 0 ? quotes[0].date : '')
+        : (snapshot.quotes.length > 0 ? snapshot.quotes[0].date : '')
       return {
         activeQuery: query,
         draftFundCode: query.fundCode,
         draftStartDate: query.startDate,
         draftEndDate: query.endDate,
-        quotes,
+        historyQuotes: quotes.slice(),
+        quotes: snapshot.quotes,
+        asOfDate,
         signals,
         selectedSignalId,
         selectedDate,
@@ -362,6 +409,45 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         loading: false,
         error: '',
         undo: null
+      }
+    })
+  }
+
+  private advanceAsOf = () => {
+    if (!this.canAdvanceAsOf()) {
+      return
+    }
+    this.invalidateReplayInputs()
+    this.setState(previousState => {
+      const query = previousState.activeQuery
+      if (!query) {
+        return null
+      }
+      const historyQuotes = previousState.historyQuotes.length > 0
+        ? previousState.historyQuotes
+        : previousState.quotes
+      const currentAsOfDate = previousState.asOfDate || query.endDate
+      if (!canAdvanceManualAsOf(query.startDate, currentAsOfDate, query.endDate)) {
+        return null
+      }
+      const nextAsOfDate = getNextManualAsOfDate(query.startDate, currentAsOfDate, query.endDate)
+      if (!nextAsOfDate) {
+        return null
+      }
+      const snapshot = createManualAsOfSnapshot(historyQuotes, previousState.signals, query, nextAsOfDate)
+      const selectedDate = snapshot.quotes.some(quote => quote.date === previousState.selectedDate)
+        ? previousState.selectedDate
+        : snapshot.quotes.length > 0 ? snapshot.quotes[0].date : ''
+      const selectedSignalId = previousState.selectedSignalId !== null
+        && snapshot.signals.some(signal => signal.id === previousState.selectedSignalId)
+        ? previousState.selectedSignalId
+        : null
+      return {
+        asOfDate: nextAsOfDate,
+        quotes: snapshot.quotes,
+        selectedDate,
+        selectedSignalId,
+        chartDateChoices: []
       }
     })
   }
@@ -544,9 +630,9 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     if (this.replayExecutionPending || this.state.replayStatus === 'running') {
       return
     }
-    const validation = this.getSequenceValidation()
+    const snapshot = this.getCurrentAsOfSnapshot()
     const query = this.state.activeQuery
-    if (!query || this.state.quotes.length === 0) {
+    if (!query || !snapshot || snapshot.quotes.length === 0) {
       this.setState({
         replayStatus: 'failure',
         replayStatusMessage: '本次运行失败；点位和参数已保留，可以修正后重试。',
@@ -554,6 +640,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       })
       return
     }
+    const validation = snapshot.sequenceValidation
     if (!validation.isValid || !validation.standardizedSequence) {
       this.setState({
         replayStatus: 'failure',
@@ -582,8 +669,8 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     }
     const requestId = ++this.replayRequestId
     const inputRevision = this.state.replayInputRevision
-    const quotes = this.state.quotes.slice()
-    const range = { startDate: query.startDate, endDate: query.endDate }
+    const quotes = snapshot.quotes.slice()
+    const range = { startDate: query.startDate, endDate: snapshot.asOfDate }
     const cancellation: ManualReplayCancellation = { cancelled: false }
     this.activeReplayCancellation = cancellation
     this.replayExecutionPending = true
@@ -670,7 +757,10 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
   }
 
   private renderHistoryChart = () => {
-    const { quotes, signals, selectedDate, selectedSignalId, selectedReplayTradeIndex } = this.state
+    const { selectedDate, selectedSignalId, selectedReplayTradeIndex } = this.state
+    const snapshot = this.getCurrentAsOfSnapshot()
+    const quotes = snapshot ? snapshot.quotes : []
+    const signals = snapshot ? snapshot.signals : []
     const plotted = plotManualHistory(quotes)
     if (plotted.length === 0) {
       return null
@@ -689,7 +779,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     signals.forEach(signal => {
       signalsByDate[signal.date] = (signalsByDate[signal.date] || []).concat(signal)
     })
-    const sequenceValidation = this.getSequenceValidation()
+    const sequenceValidation = snapshot ? snapshot.sequenceValidation : this.getSequenceValidation()
     const issuesBySignalId = this.getSignalIssuesById(sequenceValidation)
     const openSignalIds = this.getOpenSignalIds(sequenceValidation)
 
@@ -850,8 +940,6 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       searchingFunds,
       fundSearchError,
       activeQuery,
-      quotes,
-      signals,
       selectedDate,
       chartDateChoices,
       selectedSignalId,
@@ -869,9 +957,15 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       replayInputRevision,
       replayResultRevision
     } = this.state
+    const snapshot = this.getCurrentAsOfSnapshot()
+    const quotes = snapshot ? snapshot.quotes : []
+    const signals = snapshot ? snapshot.signals : []
+    const asOfDate = snapshot ? snapshot.asOfDate : ''
+    const canAdvanceAsOf = this.canAdvanceAsOf()
+    const hasHistoryQuotes = this.state.historyQuotes.length > 0 || quotes.length > 0
     const orderedSignals = sortManualSignals(signals)
     const selectedQuote = quotes.filter(item => item.date === selectedDate)[0]
-    const sequenceValidation = this.getSequenceValidation()
+    const sequenceValidation = snapshot ? snapshot.sequenceValidation : this.getSequenceValidation()
     const issuesBySignalId = this.getSignalIssuesById(sequenceValidation)
     const openSignalIds = this.getOpenSignalIds(sequenceValidation)
     const openTradeCount = sequenceValidation.standardizedSequence
@@ -966,7 +1060,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
 
       {error ? <Alert className={styles.feedback} type="error" showIcon message="无法加载基金净值" description={error} /> : null}
       {loading ? <div className={styles.loading}><Spin tip="正在读取基金历史净值…" /></div> : null}
-      {!loading && activeQuery && quotes.length === 0
+      {!loading && activeQuery && !hasHistoryQuotes
         ? <Alert className={styles.feedback} type="info" showIcon message="所选范围暂无可显示的净值" description="请检查基金代码或扩大日期范围后重试。" />
         : null}
       {activeQuery && !loading ? <div className={styles.validationSummary} role="status" aria-live="polite">
@@ -984,9 +1078,15 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         <p className={styles.engineNotice}>有效序列可进入独立的历史模拟引擎；非法序列不会被修补或重排。引擎不会调用旧自动策略，也不会发送真实订单。</p>
       </div> : null}
 
-      {quotes.length > 0 ? <div className={styles.workspaceGrid}>
+      {activeQuery && (quotes.length > 0 || canAdvanceAsOf) ? <div className={styles.workspaceGrid}>
         <Card title="历史单位净值" className={styles.chartCard}>
           <p className={styles.chartSummary}>{activeQuery ? `${activeQuery.fundCode} · ${quotes.length} 个实际净值交易日` : ''}</p>
+          <div className={styles.asOfControls} role="group" aria-label="历史净值 as-of 回放">
+            <span>模拟 as-of 截止日：<strong>{asOfDate}</strong>　所选范围：{activeQuery.startDate} 至 {activeQuery.endDate}</span>
+            <Button disabled={!canAdvanceAsOf} onClick={this.advanceAsOf}>下一周</Button>
+          </div>
+          <p className={styles.asOfNotice}>按 7 个日历日逐步累计揭示历史净值；当前图表、信号和回测仅使用此截止日及之前的数据。此功能模拟历史当时可见数据，不承诺源 NAV 的实际发布时间或修订信息（NAV 数据可能后补）。</p>
+          {quotes.length === 0 ? <p className={styles.chartSummary}>当前 as-of 窗口内暂无实际净值交易日；如仍有后续区间数据，可点击“下一周”继续揭示。</p> : null}
           {this.renderHistoryChart()}
           {chartDateChoices.length > 0 ? <div className={styles.chartDisambiguation} role="group" aria-label="选择图表重叠区域对应的净值日期" aria-live="polite">
             <p>这个点击位置覆盖多个净值点；当前选择未更改。请明确选择目标日期：</p>
@@ -1066,7 +1166,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       {activeQuery && quotes.length > 0 ? <Card title="手动回放参数（全部必填，无默认数值）" className={styles.replayCard}>
         <h3>本次运行前确认</h3>
         <dl className={styles.replaySummary}>
-          <div><dt>基金与区间</dt><dd>{activeQuery.fundCode} · {activeQuery.startDate} 至 {activeQuery.endDate}</dd></div>
+          <div><dt>基金与当前回放区间</dt><dd>{activeQuery.fundCode} · {activeQuery.startDate} 至 {asOfDate}（所选结束：{activeQuery.endDate}）</dd></div>
           <div><dt>本次信号清单</dt><dd>{orderedSignals.length > 0
             ? orderedSignals.map(signal => `${signal.date} ${signal.type === 'buy' ? '买入' : '卖出'}`).join('；')
             : '无信号'}</dd></div>
