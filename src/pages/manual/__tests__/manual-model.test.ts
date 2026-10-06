@@ -58,8 +58,8 @@ describe('manual backtest model', () => {
         isBonusPortion: true, unitMoney: '每份基金份额折算2份'
       },
       '2024-01-03': {
-        date: '2024-01-03', val: 0.49, bonus: 0.1,
-        unitMoney: '每份派现金0.1元'
+        date: '2024-01-03', val: 0.49, bonus: 0.05,
+        unitMoney: '分红：每份派现金0.05元'
       }
     }, '2024-01-02', '2024-01-03')
 
@@ -67,7 +67,7 @@ describe('manual backtest model', () => {
       date: '2024-01-02', kind: 'share-split', value: 2, valueUnit: 'share-multiplier', description: '每份基金份额折算2份'
     }])
     expect(quotes[1].corporateActions).toEqual([{
-      date: '2024-01-03', kind: 'distribution', value: 0.1, valueUnit: 'cash-per-share', description: '每份派现金0.1元'
+      date: '2024-01-03', kind: 'distribution', value: 0.05, valueUnit: 'cash-per-share', description: '分红：每份派现金0.05元'
     }])
   })
 

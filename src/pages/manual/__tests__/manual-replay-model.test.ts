@@ -239,28 +239,77 @@ describe('manual replay engine', () => {
     expect(result.disclosures.join(' ')).toContain('现金派发与再投入当日抵销')
   })
 
-  it('rejects a scheduled fill on a corporate-action date instead of silently trading or shifting it', () => {
-    expect(() => runManualReplay(
-      oneClosedTrade('2024-01-01', '2024-01-02', '2024-01-03'),
-      quotes([
-        { date: '2024-01-01', val: 10 },
-        { date: '2024-01-02', val: 10 },
-        { date: '2024-01-03', val: 9, corporateActions: [{ date: '2024-01-03', kind: 'distribution', value: 0.1, valueUnit: 'cash-per-share', description: '每份派现0.1元' }] }
-      ]),
-      { startDate: '2024-01-01', endDate: '2024-01-03' },
-      config
-    )).toThrow('原策略在 isBonus 日禁止买卖')
-
-    expect(() => runManualReplay(
+  it('processes a per-share dividend before a same-day buy without awarding it to the new shares', () => {
+    const result = runManualReplay(
       oneOpenTrade('2024-01-01', '2024-01-03'),
       quotes([
         { date: '2024-01-01', val: 10 },
-        { date: '2024-01-02', val: 9, corporateActions: [{ date: '2024-01-02', kind: 'distribution', value: 0.1, valueUnit: 'cash-per-share', description: '每份派现0.1元' }] },
+        { date: '2024-01-02', val: 9, corporateActions: [{ date: '2024-01-02', kind: 'distribution', value: 0.1, valueUnit: 'cash-per-share', description: '分红：每份派现金0.1元' }] },
         { date: '2024-01-03', val: 9 }
       ]),
       { startDate: '2024-01-01', endDate: '2024-01-03' },
-      config
-    )).toThrow('原策略在 isBonus 日禁止买卖')
+      { ...config, buyFeeRatePercent: 1, buySlippageRatePercent: 10 }
+    )
+    const boughtShares = 500 / 9.9
+
+    expect(result.trades[0]).toMatchObject({
+      entryExecutionDate: '2024-01-02', entryMarketNav: 9, entryFillNav: 9.9,
+      entryNotional: 500, entryFee: 5, shares: boughtShares,
+      currentValue: boughtShares * 9, status: 'open'
+    })
+    expect(result.dailySnapshots[1]).toMatchObject({
+      date: '2024-01-02', nav: 9, cash: 495, shares: boughtShares,
+      dividendReinvestmentAmount: 0, positionValue: boughtShares * 9,
+      totalAssets: 495 + boughtShares * 9, positionStatus: 'open', completedTradeCount: 0
+    })
+    expect(result.summary).toMatchObject({
+      endingCash: 495, endingShares: boughtShares, totalDividendReinvested: 0,
+      openPositionValue: boughtShares * 9, completedTradeCount: 0,
+      openTradeCount: 1, endingPositionStatus: 'open'
+    })
+  })
+
+  it('reinvests a per-share dividend before a same-day sell and sells the post-event shares at that day NAV with slippage', () => {
+    const result = runManualReplay(
+      oneClosedTrade('2024-01-01', '2024-01-02', '2024-01-04'),
+      quotes([
+        { date: '2024-01-01', val: 10 },
+        { date: '2024-01-02', val: 10 },
+        { date: '2024-01-03', val: 9, corporateActions: [{ date: '2024-01-03', kind: 'distribution', value: 0.1, valueUnit: 'cash-per-share', description: '分红：每份派现金0.1元' }] },
+        { date: '2024-01-04', val: 9 }
+      ]),
+      { startDate: '2024-01-01', endDate: '2024-01-04' },
+      {
+        ...config,
+        buyFeeRatePercent: 1,
+        sellFeeRatePercent: 2,
+        buySlippageRatePercent: 10,
+        sellSlippageRatePercent: 10
+      }
+    )
+    const preEventShares = 500 / 11
+    const dividendCash = preEventShares * 0.1
+    const postEventShares = preEventShares * (9 + 0.1) / 9
+    const exitFillNav = 9 * (1 - 0.1)
+    const exitNotional = postEventShares * exitFillNav
+    const exitFee = exitNotional * 0.02
+    const endingCash = 495 + exitNotional - exitFee
+
+    expect(result.trades[0]).toMatchObject({
+      entryExecutionDate: '2024-01-02', entryFillNav: 11, entryFee: 5,
+      shares: postEventShares, exitExecutionDate: '2024-01-03',
+      exitMarketNav: 9, exitFillNav, exitNotional, exitFee, status: 'closed'
+    })
+    expect(result.trades[0].realizedProfit!).toBeCloseTo(endingCash - 1000, 10)
+    expect(result.dailySnapshots[2]).toMatchObject({
+      date: '2024-01-03', nav: 9, cash: endingCash, shares: 0,
+      dividendReinvestmentAmount: dividendCash, positionValue: 0,
+      totalAssets: endingCash, positionStatus: 'flat', completedTradeCount: 1
+    })
+    expect(result.summary).toMatchObject({
+      endingCash, endingShares: 0, totalDividendReinvested: dividendCash,
+      completedTradeCount: 1, openTradeCount: 0, endingPositionStatus: 'flat'
+    })
   })
 
   it('fails clearly when a holding encounters a distribution with unverified amount units or event type', () => {
@@ -300,6 +349,47 @@ describe('manual replay engine', () => {
       ]),
       { startDate: '2024-01-01', endDate: '2024-01-04' }, config
     )).toThrow('无法可靠解释的基金事件')
+  })
+
+  it('discloses an unparsed split while flat and continues with the same-day buy', () => {
+    const result = runManualReplay(
+      oneOpenTrade('2024-01-01', '2024-01-03'),
+      quotes([
+        { date: '2024-01-01', val: 10 },
+        { date: '2024-01-02', val: 9, corporateActions: [{
+          date: '2024-01-02', kind: 'share-split', value: null,
+          valueUnit: 'unknown', description: '份额拆分比例待公布'
+        }] },
+        { date: '2024-01-03', val: 9 }
+      ]),
+      { startDate: '2024-01-01', endDate: '2024-01-03' },
+      config
+    )
+
+    expect(result.trades[0].entryExecutionDate).toBe('2024-01-02')
+    expect(result.dailySnapshots[1]).toMatchObject({
+      date: '2024-01-02', cash: 500, shares: 500 / 9,
+      positionValue: 500, positionStatus: 'open'
+    })
+    expect(result.disclosures.join(' ')).toContain('警告：数据源报告份额拆分/折算事件')
+    expect(result.disclosures.join(' ')).toContain('当日为空仓，未调整持仓，继续回测')
+  })
+
+  it('rejects an unparsed split while a holding exists', () => {
+    expect(() => runManualReplay(
+      oneOpenTrade('2024-01-01', '2024-01-04'),
+      quotes([
+        { date: '2024-01-01', val: 10 },
+        { date: '2024-01-02', val: 10 },
+        { date: '2024-01-03', val: 9, corporateActions: [{
+          date: '2024-01-03', kind: 'share-split', value: null,
+          valueUnit: 'unknown', description: '份额拆分比例待公布'
+        }] },
+        { date: '2024-01-04', val: 9 }
+      ]),
+      { startDate: '2024-01-01', endDate: '2024-01-04' },
+      config
+    )).toThrow('没有可验证的正数份额倍数')
   })
 
   it('rejects malformed, duplicate, out-of-range or invalid NAV data', () => {

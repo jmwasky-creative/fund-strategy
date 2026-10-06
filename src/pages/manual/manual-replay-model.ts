@@ -129,10 +129,6 @@ const assertAction = (action: ManualCorporateAction, quoteDate: string) => {
   if (!action || action.date !== quoteDate || !isCalendarDate(action.date)) {
     fail(`${quoteDate} 的基金事件日期/结构无效。`)
   }
-  if (action.kind === 'share-split'
-    && (action.valueUnit !== 'share-multiplier' || !Number.isFinite(Number(action.value)) || Number(action.value) <= 0)) {
-    fail(`${quoteDate} 数据源报告份额拆分/折算，但没有可验证的正数份额倍数。`)
-  }
   if (action.kind !== 'share-split' && action.kind !== 'distribution' && action.kind !== 'unclassified') {
     fail(`${quoteDate} 存在无法识别的基金事件，不能继续回放。`)
   }
@@ -223,7 +219,9 @@ const scheduleSignal = (
  * observation strictly after signal date; the selected range is never extended.
  * Buy amount is pre-fee notional; fee = notional * fee rate. Slippage adjusts NAV:
  * buy NAV * (1 + rate), sell NAV * (1 - rate). Cash dividends are reinvested only
- * when the source explicitly gives a currency amount per share. All rates are explicit.
+ * when the source explicitly gives a currency amount per share. On event dates,
+ * process existing holdings first, then execute orders at that day's NAV and slippage.
+ * All rates are explicit.
  */
 export const runManualReplay = (
   validation: ManualSequenceValidation,
@@ -280,8 +278,8 @@ export const runManualReplay = (
     `每次买入按本次显式输入的固定费前名义金额下单；卖出信号平掉单笔未平仓交易的全部份额。买卖费用 = 对应成交名义金额 × 显式输入费率，买入费用另计现金支出。`,
     `买入成交净值 = 当日净值 × (1 + 买入滑点率)；卖出成交净值 = 当日净值 × (1 - 卖出滑点率)。`,
     `信号在信号日后的下一条区间内有效净值成交；成交日期与信号日期分开记录。`,
-    `仅将数据源 unitMoney 明确写为“每份……X元”的现金分红按每份现金金额确认，并按原策略公式 shares × (当日净值 + 每份红利) / 当日净值复投；未明确金额或单位、事件类型无法识别时，持仓路径明确报错，不推测。`,
-    `每个净值日期先处理已有持仓的份额事件/红利复投；原策略在 isBonus 日禁止买卖，因此本回测若订单恰落在基金事件日会明确报错，不静默成交或顺延。`,
+    `仅将数据源 unitMoney 明确写为“每份……X元”的现金分红按每份现金金额确认，并按原策略公式 shares × (当日净值 + 每份红利) / 当日净值复投；事件金额/单位不明或类型无法识别时，持仓期间明确报错，空仓期间以警告披露且不调整持仓后继续；不推测。`,
+    `每个净值日期先处理既有持仓的份额事件/红利复投，再按当日有效净值及比例滑点执行订单；事件日买入的新份额不领取本次已发生的红利，事件日卖出按复投或份额调整后的数量成交，不报错或顺延。`,
     `本结果为历史模拟，不会发送真实订单；红利复投的现金派发与再投入在同一净值日入账并抵销，期末现金余额不因复投而增加，复投金额单独记录。`
   ]
   const trades: ManualReplayTrade[] = sourceTrades.map(trade => ({
@@ -307,14 +305,37 @@ export const runManualReplay = (
   quotes.forEach(quote => {
     const actions = quote.corporateActions || []
     const orders = schedule[quote.date] || []
-    if (actions.length > 0 && orders.length > 0) {
-      fail(`${quote.date} 同时有基金事件和预定成交；原策略在 isBonus 日禁止买卖，不能在此日成交或擅自顺延，请调整信号日期。`)
-    }
     let dividendReinvestmentAmount = 0
     actions.forEach(action => {
+      const isValidSplit = action.kind === 'share-split'
+        && action.valueUnit === 'share-multiplier'
+        && Number.isFinite(Number(action.value))
+        && Number(action.value) > 0
+      const isValidDistribution = action.kind === 'distribution'
+        && action.valueUnit === 'cash-per-share'
+        && typeof action.value === 'number'
+        && Number.isFinite(action.value)
+        && action.value >= 0
       if (shares <= 0) {
-        disclosures.push(`${action.date} 数据源报告基金事件“${action.description}”；当日为空仓，未调整持仓。`)
+        if (!isValidSplit && !isValidDistribution) {
+          const eventType = action.kind === 'share-split' ? '份额拆分/折算事件'
+            : action.kind === 'distribution' ? '分红/派息事件' : '基金事件'
+          const expectedValue = action.kind === 'share-split' ? '可验证的正数份额倍数'
+            : action.kind === 'distribution' ? '明确的每份现金金额及金额单位' : '可识别的事件类型和单位'
+          disclosures.push(`${action.date} 警告：数据源报告${eventType}“${action.description}”，但缺少${expectedValue}；当日为空仓，未调整持仓，继续回测。`)
+        } else {
+          disclosures.push(`${action.date} 数据源报告基金事件“${action.description}”；当日为空仓，未调整持仓。`)
+        }
         return
+      }
+      if (action.kind === 'share-split' && !isValidSplit) {
+        fail(`${action.date} 数据源报告份额拆分/折算，但没有可验证的正数份额倍数。`)
+      }
+      if (action.kind === 'distribution' && !isValidDistribution) {
+        fail(`${action.date} 持仓期间发生无法可靠解释的分红事件“${action.description}”；缺少明确事件类型、每份现金金额或金额单位，不能安全计算红利复投。`)
+      }
+      if (action.kind === 'unclassified') {
+        fail(`${action.date} 持仓期间发生无法可靠解释的基金事件“${action.description}”；不能猜测事件类型或金额。`)
       }
       if (action.kind === 'share-split') {
         shares *= Number(action.value)
@@ -323,13 +344,6 @@ export const runManualReplay = (
         }
         disclosures.push(`${action.date} 数据源报告份额拆分/折算；按其公布倍数 ${action.value} 调整持有份额，未产生现金流。`)
         return
-      }
-      if (action.kind !== 'distribution'
-        || action.valueUnit !== 'cash-per-share'
-        || typeof action.value !== 'number'
-        || !Number.isFinite(action.value)
-        || action.value < 0) {
-        fail(`${action.date} 持仓期间发生无法可靠解释的基金事件“${action.description}”；缺少明确事件类型、每份现金金额或金额单位，不能安全计算红利复投。`)
       }
       const perShareCash = Number(action.value)
       const reinvestedCash = shares * perShareCash

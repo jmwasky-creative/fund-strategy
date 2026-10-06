@@ -47,6 +47,32 @@ describe('market-data adapters', () => {
     expect(result.all['2020-01-03'].isBonusPortion).toBeUndefined()
   })
 
+  it('uses the provider China date and parses the actual Eastmoney dividend row independently of local timezone', async () => {
+    const originalTimezone = process.env.TZ
+    process.env.TZ = 'America/Los_Angeles'
+    try {
+      loadFundHistoryMock.mockResolvedValue([{
+        x: 1461081600000,
+        y: 1.001,
+        unitMoney: '分红：每份派现金0.05元'
+      }])
+
+      const result = await getFundData('001819', 1)
+
+      expect(result.all['2016-04-20']).toMatchObject({
+        date: '2016-04-20', val: 1.001, bonus: 0.05,
+        unitMoney: '分红：每份派现金0.05元'
+      })
+      expect(result.all['2016-04-19']).toBeUndefined()
+    } finally {
+      if (originalTimezone === undefined) {
+        delete process.env.TZ
+      } else {
+        process.env.TZ = originalTimezone
+      }
+    }
+  })
+
   it('rejects invalid fund codes and empty history rather than returning an empty backtest', async () => {
     await expect(getFundData('000001&callback=evil', 10)).rejects.toThrow('基金代码必须为 6 位数字')
     expect(loadFundHistoryMock).not.toHaveBeenCalled()

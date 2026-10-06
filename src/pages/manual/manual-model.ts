@@ -169,7 +169,7 @@ export const filterManualQuotes = (
     }
     const eventDescription = description || '数据源报告 bonus/份额事件字段，但缺少 unitMoney 事件说明'
     const splitMatch = description.match(/^(?:每份(?:基金)?份额)?(?:拆分|折算)\s*(?:为\s*)?(\d+(?:\.\d+)?)\s*份$/)
-    const cashPerShareMatch = description.match(/^每份(?:(?:基金)?份额)?(?:派现金|派现|现金分红|现金红利|派息|分红|派发现金)\s*(\d+(?:\.\d+)?)\s*元$/)
+    const cashPerShareMatch = description.match(/^(?:分红\s*[：:]?\s*)?每份(?:(?:基金)?份额)?(?:派现金|派现|现金分红|现金红利|派息|分红|派发现金)\s*(\d+(?:\.\d+)?)\s*元$/)
     const isSplit = Boolean(source.isBonusPortion) || /拆分|折算/.test(description)
     const isDistribution = /分红|派现|派息|红利|现金/.test(description)
     const matchedAmount = splitMatch ? Number(splitMatch[1])
