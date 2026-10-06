@@ -3,6 +3,8 @@ import renderer, { ReactTestInstance, ReactTestRenderer } from 'react-test-rende
 import ManualBacktestPage from '..'
 import { ManualQuote } from '../manual-model'
 
+jest.mock('@/utils/fund-stragegy/manual-history', () => ({ loadManualHistory: jest.fn() }))
+
 jest.mock('antd/es/alert', () => {
   const ReactModule = require('react')
   return { __esModule: true, default: (props: any) => ReactModule.createElement('div', null, props.message, props.description) }
@@ -75,6 +77,44 @@ const renderedText = (instance: any): string => {
 const invalidChartPoints = (tree: ReactTestRenderer): ReactTestInstance[] => tree.root.findAllByType('g').filter(point =>
   point.props.role === 'img' && String(point.props['aria-label']).indexOf('校验提示') >= 0
 )
+
+const flushReplayTimers = async () => {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    jest.runOnlyPendingTimers()
+    for (let index = 0; index < 6; index += 1) {
+      await Promise.resolve()
+    }
+  }
+}
+
+const setReadyReplayState = (page: any) => page.setState({
+  draftFundCode: '260108',
+  draftStartDate: '2024-01-02',
+  draftEndDate: '2024-01-03',
+  activeQuery: { fundCode: '260108', startDate: '2024-01-02', endDate: '2024-01-03' },
+  quotes: [
+    { date: '2024-01-02', val: 1.02 },
+    { date: '2024-01-03', val: 1.03 }
+  ],
+  signals: [{ id: 1, date: '2024-01-02', type: 'buy' }],
+  selectedDate: '2024-01-02',
+  nextSignalId: 2,
+  replayConfig: {
+    initialCash: '1000',
+    buyAmount: '500',
+    buyFeeRatePercent: '0',
+    sellFeeRatePercent: '0',
+    buySlippageRatePercent: '0',
+    sellSlippageRatePercent: '0'
+  }
+})
+
+const manualHistoryMock = require('@/utils/fund-stragegy/manual-history').loadManualHistory as jest.Mock
+
+afterEach(() => {
+  jest.useRealTimers()
+  manualHistoryMock.mockReset()
+})
 
 describe('manual chart date selection', () => {
   it('asks before resolving overlapping 2025-11-10 and 2025-11-11 markers, then preserves signal editing', () => {
@@ -316,9 +356,10 @@ describe('manual sequence validation feedback', () => {
     tree.unmount()
   })
 
-  it('requires explicit simulation parameters and renders an estimated but unclosed terminal holding', () => {
+  it('requires explicit simulation parameters and renders an estimated but unclosed terminal holding', async () => {
     const tree = renderer.create(<ManualBacktestPage />)
     const page = tree.getInstance() as any
+    jest.useFakeTimers()
     page.setState({
       activeQuery: { fundCode: '260108', startDate: '2024-01-02', endDate: '2024-01-03' },
       quotes: [
@@ -329,8 +370,10 @@ describe('manual sequence validation feedback', () => {
     })
 
     buttonByText(tree, '运行模拟回测').props.onClick()
+    await flushReplayTimers()
     expect(page.state.replayResult).toBeNull()
     expect(page.state.replayError).toContain('请显式填写初始资金')
+    expect(page.state.replayStatus).toBe('failure')
 
     page.setState({ replayConfig: {
       initialCash: '1000',
@@ -340,9 +383,12 @@ describe('manual sequence validation feedback', () => {
       buySlippageRatePercent: '0',
       sellSlippageRatePercent: '0'
     } })
-    buttonByText(tree, '运行模拟回测').props.onClick()
+    buttonByText(tree, '使用当前参数重试').props.onClick()
+    expect(page.state.replayStatus).toBe('running')
+    await flushReplayTimers()
 
     expect(page.state.replayError).toBe('')
+    expect(page.state.replayStatus).toBe('success')
     expect(page.state.replayResult.summary).toMatchObject({
       endingPositionStatus: 'open',
       completedTradeCount: 0,
@@ -352,6 +398,210 @@ describe('manual sequence validation feedback', () => {
     expect(renderedText(tree.root)).toContain('open / 未平仓')
     expect(renderedText(tree.root)).toContain('不计入已完成交易')
 
+    tree.unmount()
+  })
+
+  it('prevents quick duplicate submissions and displays the confirmed run inputs', async () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    jest.useFakeTimers()
+    setReadyReplayState(page)
+    const runButton = buttonByText(tree, '运行模拟回测')
+    const execute = page.executeReplay.bind(page)
+    page.executeReplay = jest.fn((...args: any[]) => execute(...args))
+
+    runButton.props.onClick()
+    runButton.props.onClick()
+    expect(page.state.replayStatus).toBe('running')
+    expect(buttonByText(tree, '取消本次运行')).toBeTruthy()
+    const preview = renderedText(tree.root)
+    expect(preview).toContain('260108 · 2024-01-02 至 2024-01-03')
+    expect(preview).toContain('2024-01-02 买入')
+    expect(preview).toContain('信号日后的下一条区间内有效净值成交')
+    await flushReplayTimers()
+    expect(page.executeReplay).toHaveBeenCalledTimes(1)
+    expect(page.state.replayStatus).toBe('success')
+
+    tree.unmount()
+  })
+
+  it('cancels without partial results and ignores a late completion', async () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    jest.useFakeTimers()
+    setReadyReplayState(page)
+    let resolveRun: (value: any) => void = () => undefined
+    page.executeReplay = jest.fn(() => new Promise(resolve => {
+      resolveRun = resolve
+    }))
+
+    buttonByText(tree, '运行模拟回测').props.onClick()
+    await flushReplayTimers()
+    expect(page.state.replayStatus).toBe('running')
+    buttonByText(tree, '取消本次运行').props.onClick()
+    expect(page.state.replayStatus).toBe('cancelled')
+    resolveRun({ summary: { endingPositionStatus: 'open' } })
+    for (let index = 0; index < 6; index += 1) {
+      await Promise.resolve()
+    }
+    expect(page.state.replayResult).toBeNull()
+    expect(page.state.replayStatus).toBe('cancelled')
+    expect(page.state.signals).toHaveLength(1)
+    expect(page.state.replayConfig.buyAmount).toBe('500')
+    expect(renderedText(tree.root)).toContain('已取消；本次运行的部分结果不会展示')
+
+    tree.unmount()
+  })
+
+  it('preserves fund/date drafts, markers, and financial inputs when the history API fails', async () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    page.setState({
+      draftFundCode: '000001',
+      draftStartDate: '2025-01-01',
+      draftEndDate: '2025-02-01',
+      activeQuery: { fundCode: '260108', startDate: '2024-01-02', endDate: '2024-01-03' },
+      quotes: [
+        { date: '2024-01-02', val: 1.02 },
+        { date: '2024-01-03', val: 1.03 }
+      ],
+      signals: [{ id: 7, date: '2024-01-02', type: 'buy' }],
+      replayConfig: {
+        initialCash: '1200',
+        buyAmount: '600',
+        buyFeeRatePercent: '0.3',
+        sellFeeRatePercent: '0.4',
+        buySlippageRatePercent: '0.1',
+        sellSlippageRatePercent: '0.2'
+      }
+    })
+    manualHistoryMock.mockRejectedValue(new Error('行情服务暂时不可用'))
+
+    page.submitQuery({ preventDefault: jest.fn() })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(page.state.loading).toBe(false)
+    expect(page.state.error).toContain('行情服务暂时不可用')
+    expect(page.state.draftFundCode).toBe('000001')
+    expect(page.state.draftStartDate).toBe('2025-01-01')
+    expect(page.state.draftEndDate).toBe('2025-02-01')
+    expect(page.state.signals).toEqual([{ id: 7, date: '2024-01-02', type: 'buy' }])
+    expect(page.state.replayConfig).toEqual({
+      initialCash: '1200',
+      buyAmount: '600',
+      buyFeeRatePercent: '0.3',
+      sellFeeRatePercent: '0.4',
+      buySlippageRatePercent: '0.1',
+      sellSlippageRatePercent: '0.2'
+    })
+
+    tree.unmount()
+  })
+
+  it('retains inputs on failure, retries with the same values, and marks completed results stale after edits', async () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    jest.useFakeTimers()
+    setReadyReplayState(page)
+    const execute = page.executeReplay.bind(page)
+    let attempts = 0
+    page.executeReplay = (...args: any[]) => {
+      attempts += 1
+      return attempts === 1 ? Promise.reject(new Error('临时计算错误')) : execute(...args)
+    }
+
+    buttonByText(tree, '运行模拟回测').props.onClick()
+    await flushReplayTimers()
+    expect(page.state.replayStatus).toBe('failure')
+    expect(page.state.replayResult).toBeNull()
+    expect(page.state.replayError).toContain('临时计算错误')
+    expect(page.state.signals).toHaveLength(1)
+    expect(page.state.replayConfig.buyAmount).toBe('500')
+
+    buttonByText(tree, '使用当前参数重试').props.onClick()
+    await flushReplayTimers()
+    expect(attempts).toBe(2)
+    expect(page.state.replayStatus).toBe('success')
+    expect(page.state.replayConfig.buyAmount).toBe('500')
+
+    const priorResult = page.state.replayResult
+    page.selectDate('2024-01-03')
+    page.addSignal('sell')
+    expect(page.state.signals).toHaveLength(2)
+    expect(page.state.replayResult).toBe(priorResult)
+    expect(renderedText(tree.root)).toContain('此结果基于先前输入，已过期')
+
+    page.handleReplayConfigChange('buyAmount')({ currentTarget: { value: '600' } })
+    expect(page.state.replayResult).toBe(priorResult)
+    expect(page.state.replayConfig.buyAmount).toBe('600')
+    expect(page.state.replayStatus).toBe('idle')
+    expect(renderedText(tree.root)).toContain('此结果基于先前输入，已过期')
+    expect(renderedText(tree.root)).toContain('不可作为当前点位或参数的结果')
+
+    page.handleDateChange('draftEndDate')({ currentTarget: { value: '2024-01-04' } })
+    expect(renderedText(tree.root)).toContain('有修改尚未加载')
+    expect(buttonByText(tree, '运行模拟回测').props.disabled).toBe(true)
+
+    tree.unmount()
+  })
+
+  it('cancels the real UI replay after ledger dates advance and keeps the page interactive without partial results', async () => {
+    jest.useRealTimers()
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const replayQuotes = createDenseQuotes()
+    const startDate = replayQuotes[0].date
+    const endDate = replayQuotes[replayQuotes.length - 1].date
+    page.setState({
+      draftFundCode: '260108',
+      draftStartDate: startDate,
+      draftEndDate: endDate,
+      activeQuery: { fundCode: '260108', startDate, endDate },
+      quotes: replayQuotes,
+      signals: [{ id: 1, date: startDate, type: 'buy' }],
+      selectedDate: startDate,
+      selectedSignalId: null,
+      nextSignalId: 2,
+      replayConfig: {
+        initialCash: '1000',
+        buyAmount: '500',
+        buyFeeRatePercent: '0',
+        sellFeeRatePercent: '0',
+        buySlippageRatePercent: '0',
+        sellSlippageRatePercent: '0'
+      },
+      replayResult: null,
+      replayProgress: null
+    })
+
+    buttonByText(tree, '运行模拟回测').props.onClick()
+    const deadline = Date.now() + 3000
+    while ((!page.state.replayProgress || page.state.replayProgress.processedDates < 24) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+
+    expect(page.state.replayStatus).toBe('running')
+    expect(page.state.replayProgress.processedDates).toBeGreaterThanOrEqual(24)
+    expect(page.state.replayProgress.totalDates).toBe(replayQuotes.length)
+    expect(page.state.replayProgress.processedDates).toBeLessThan(replayQuotes.length)
+    buttonByText(tree, '取消本次运行').props.onClick()
+    expect(page.state.replayStatus).toBe('cancelled')
+    expect(page.state.replayResult).toBeNull()
+    expect(page.state.replayError).toBe('')
+
+    const stoppedAt = page.state.replayProgress.processedDates
+    await new Promise(resolve => setTimeout(resolve, 40))
+    expect(page.state.replayProgress.processedDates).toBe(stoppedAt)
+    expect(page.state.replayStatus).toBe('cancelled')
+    expect(page.state.replayResult).toBeNull()
+    expect(page.state.signals).toEqual([{ id: 1, date: startDate, type: 'buy' }])
+    expect(page.state.replayConfig.buyAmount).toBe('500')
+    expect(renderedText(tree.root)).toContain('已取消；本次运行的部分结果不会展示')
+
+    page.selectSignal({ id: 1, date: startDate, type: 'buy' })
+    expect(page.state.selectedSignalId).toBe(1)
+    expect(page.state.replayStatus).toBe('cancelled')
     tree.unmount()
   })
 })
