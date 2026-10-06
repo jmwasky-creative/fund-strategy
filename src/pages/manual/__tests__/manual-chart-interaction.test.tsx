@@ -119,7 +119,7 @@ afterEach(() => {
 })
 
 describe('manual chart date selection', () => {
-  it('asks before resolving overlapping 2025-11-10 and 2025-11-11 markers, then preserves signal editing', () => {
+  it('keeps overlapping real NAV dates ambiguous until chosen, then confirms buy or sell on that exact point', () => {
     const tree = renderer.create(<ManualBacktestPage />)
     const page = tree.getInstance() as any
     const quotes = createDenseQuotes()
@@ -127,7 +127,7 @@ describe('manual chart date selection', () => {
       activeQuery: { fundCode: '260108', startDate: quotes[0].date, endDate: quotes[quotes.length - 1].date },
       quotes,
       signals: [],
-      selectedDate: '2025-11-07',
+      selectedDate: '',
       chartDateChoices: [],
       selectedSignalId: null,
       nextSignalId: 1,
@@ -157,19 +157,25 @@ describe('manual chart date selection', () => {
       clientY: selectedMarker.props.cy * 0.75 + 15
     })
 
-    expect(page.state.selectedDate).toBe('2025-11-07')
+    expect(page.state.selectedDate).toBe('')
+    expect(page.state.signals).toEqual([])
     expect(page.state.chartDateChoices).toEqual(expect.arrayContaining(['2025-11-10', '2025-11-11']))
     expect(buttonByText(tree, '2025-11-10 · 净值 1.1210')).toBeTruthy()
     expect(buttonByText(tree, '2025-11-11 · 净值 1.1210')).toBeTruthy()
-    expect(buttonByText(tree, '买入信号模式')).toBeTruthy()
+    expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(true)
+    expect(buttonByText(tree, '确认卖出信号').props.disabled).toBe(true)
 
     buttonByText(tree, '2025-11-10 · 净值 1.1210').props.onClick()
     expect(page.state.selectedDate).toBe('2025-11-10')
     expect(page.state.selectedDate).not.toBe('2025-11-11')
     expect(page.state.chartDateChoices).toEqual([])
+    expect(page.state.signals).toEqual([])
+    expect(renderedText(tree.root)).toContain('2025-11-10　单位净值：1.1210')
+    expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(false)
 
-    page.addSignal('buy')
-    page.addSignal('sell')
+    buttonByText(tree, '确认买入信号').props.onClick()
+    expect(page.state.selectedDate).toBe('2025-11-10')
+    buttonByText(tree, '确认卖出信号').props.onClick()
     expect(page.state.signals.map((signal: any) => [signal.date, signal.type])).toEqual([
       ['2025-11-10', 'buy'],
       ['2025-11-10', 'sell']
@@ -259,29 +265,31 @@ describe('manual chart date selection', () => {
     expect(page.state.selectedSignalId).toBe(signalA.id)
     expect(page.state.selectedDate).toBe('2024-01-02')
 
-    page.setSignalMode('sell')
     const pointB = tree.root.findAllByType('circle').filter(circle =>
       circle.props.role === 'button' && String(circle.props['aria-label']).includes('2024-01-03')
     )[0]
     pointB.props.onKeyDown({ key: 'Enter', preventDefault: jest.fn() })
     expect(page.state.selectedDate).toBe('2024-01-03')
+    expect(page.state.selectedSignalId).toBeNull()
+    expect(page.state.signals).toHaveLength(1)
+    buttonByText(tree, '确认卖出信号').props.onClick()
     expect(page.state.selectedSignalId).toBe(2)
     expect(page.state.signals).toHaveLength(2)
 
     buttonByText(tree, '撤销最近一次点位操作').props.onClick()
 
     expect(page.state.signals.map((signal: any) => signal.id)).toEqual([signalA.id])
-    expect(page.state.selectedSignalId).toBe(signalA.id)
-    expect(page.state.selectedDate).toBe('2024-01-02')
-    expect(tree.root.findAllByType('tr').filter(row => row.props['aria-selected'] === true)).toHaveLength(1)
+    expect(page.state.selectedSignalId).toBeNull()
+    expect(page.state.selectedDate).toBe('2024-01-03')
+    expect(tree.root.findAllByType('tr').filter(row => row.props['aria-selected'] === true)).toHaveLength(0)
     const selectedPoint = tree.root.findAllByType('circle').filter(circle =>
       circle.props.role === 'button' && String(circle.props['aria-label']).includes('2024-01-02')
     )[0]
     const otherPoint = tree.root.findAllByType('circle').filter(circle =>
       circle.props.role === 'button' && String(circle.props['aria-label']).includes('2024-01-03')
     )[0]
-    expect(selectedPoint.props.r).toBe(5)
-    expect(otherPoint.props.r).toBe(3.5)
+    expect(selectedPoint.props.r).toBe(3.5)
+    expect(otherPoint.props.r).toBe(5)
 
     tree.unmount()
   })
@@ -295,6 +303,7 @@ describe('manual chart date selection', () => {
       quotes,
       signals: [],
       selectedDate: '2025-11-10',
+      selectionSource: 'chart',
       chartDateChoices: [],
       selectedSignalId: null,
       nextSignalId: 1,
@@ -347,15 +356,15 @@ describe('manual chart date selection', () => {
 
     expect(page.state.selectedDate).toBe('2025-11-10')
     expect(page.state.chartDateChoices).toEqual(expect.arrayContaining(['2025-11-10', '2025-11-11']))
-    expect(buttonByText(tree, '买入信号模式')).toBeTruthy()
-    expect(buttonByText(tree, '卖出信号模式')).toBeTruthy()
+    expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(false)
+    expect(buttonByText(tree, '确认卖出信号').props.disabled).toBe(false)
     expect(page.state.signals).toEqual([])
 
     buttonByText(tree, '2025-11-11 · 净值 1.1210').props.onClick()
     expect(page.state.selectedDate).toBe('2025-11-11')
     expect(page.state.chartDateChoices).toEqual([])
-    expect(buttonByText(tree, '买入信号模式')).toBeTruthy()
-    page.addSignal('buy')
+    expect(page.state.signals).toEqual([])
+    buttonByText(tree, '确认买入信号').props.onClick()
     expect(page.state.signals.map((signal: any) => [signal.date, signal.type])).toEqual([['2025-11-11', 'buy']])
 
     tree.unmount()
@@ -364,7 +373,7 @@ describe('manual chart date selection', () => {
 
 
 describe('manual point-mode chart workflow', () => {
-  it('requires a signal mode, snaps only to an as-of NAV, shows hover/crosshair values, reveals fill dates later, and keeps chart/list edits linked', () => {
+  it('requires an explicit real NAV selection before confirming a signal and keeps as-of fills linked without shifting the target', () => {
     const tree = renderer.create(<ManualBacktestPage />)
     const page = tree.getInstance() as any
     const quotes: ManualQuote[] = [
@@ -379,7 +388,7 @@ describe('manual point-mode chart workflow', () => {
       quotes: quotes.slice(0, 2),
       asOfDate: '2024-01-07',
       signals: [],
-      selectedDate: '2024-01-04',
+      selectedDate: '',
       nextSignalId: 1
     })
 
@@ -418,17 +427,46 @@ describe('manual point-mode chart workflow', () => {
       .map(circle => circle.props['aria-label'].match(/\d{4}-\d{2}-\d{2}/)![0])
 
     expect(visibleQuoteDates()).toEqual(['2024-01-01', '2024-01-04'])
+    expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(true)
+    expect(buttonByText(tree, '确认卖出信号').props.disabled).toBe(true)
+    const firstPoint = tree.root.findAllByType('circle').filter(circle =>
+      typeof circle.props['aria-label'] === 'string'
+        && circle.props['aria-label'].includes('2024-01-01')
+        && circle.props['aria-label'].includes('1.0000')
+    )[0]
+    const realPoint = quotePoint()
+    chart.props.onClick({
+      nativeEvent: { detail: 1 },
+      currentTarget: chartSvg,
+      clientX: (firstPoint.props.cx + realPoint.props.cx) / 2,
+      clientY: (firstPoint.props.cy + realPoint.props.cy) / 2
+    })
+    expect(page.state.selectedDate).toBe('')
+    page.selectDate('2024-01-08')
+    expect(page.state.selectedDate).toBe('')
+
     chart.props.onMouseMove({ currentTarget: chartSvg, clientX: quotePoint().props.cx, clientY: quotePoint().props.cy })
     expect(renderedText(tree.root)).toContain('2024-01-04 · 单位净值 1.0400')
+    expect(page.state.selectedDate).toBe('')
+    expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(true)
     expect(tree.root.findAllByType('g').some(group =>
       group.props.role === 'status' && String(group.props['aria-label']).includes('2024-01-04')
     )).toBe(true)
 
     chart.props.onClick(clickEvent())
     expect(page.state.signals).toEqual([])
-    buttonByText(tree, '买入信号模式').props.onClick()
-    chart.props.onClick(clickEvent())
+    expect(page.state.selectedDate).toBe('2024-01-04')
+    expect(renderedText(tree.root)).toContain('2024-01-04　单位净值：1.0400')
+    expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(false)
+    const selectedReadout = tree.root.findAllByType('g').filter(group =>
+      group.props.role === 'status' && String(group.props['aria-label']).startsWith('已选真实净值：2024-01-04')
+    )[0]
+    const selectedCrosshair = selectedReadout.findByType('line')
+    expect(selectedCrosshair.props.x1).toBe(realPoint.props.cx)
+    expect(selectedCrosshair.props.x2).toBe(realPoint.props.cx)
+    buttonByText(tree, '确认买入信号').props.onClick()
     expect(page.state.signals.map((signal: any) => [signal.date, signal.type])).toEqual([['2024-01-04', 'buy']])
+    expect(page.state.selectedDate).toBe('2024-01-04')
     expect(renderedText(tree.root)).toContain('待后续 as-of 揭示；不推断未来日期')
     expect(JSON.stringify(tree.toJSON())).not.toContain('2024-01-08')
 
@@ -444,11 +482,16 @@ describe('manual point-mode chart workflow', () => {
     signalRow.props.onClick()
     expect(page.state.selectedSignalId).toBe(1)
     expect(page.state.selectedDate).toBe('2024-01-04')
+    expect(page.state.selectionSource).toBe('signal-list')
+    expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(true)
     expect(tree.root.findAllByType('tr').some(row => row.props['aria-selected'] === true)).toBe(true)
     expect(tree.root.findAllByType('g').some(group =>
       group.props.role === 'button' && group.props['aria-pressed'] === true
     )).toBe(true)
 
+    chart.props.onClick(clickEvent())
+    expect(page.state.selectionSource).toBe('chart')
+    expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(false)
     page.setState({ selectedSignalId: null })
     const signalMarker = tree.root.findAllByType('g').filter(group =>
       group.props.role === 'button' && String(group.props['aria-label']).includes('2024-01-04 买入信号日')
@@ -456,6 +499,8 @@ describe('manual point-mode chart workflow', () => {
     expect(signalMarker).toBeTruthy()
     signalMarker.props.onClick({ stopPropagation: jest.fn() })
     expect(page.state.selectedSignalId).toBe(1)
+    expect(page.state.selectionSource).toBe('signal-list')
+    expect(buttonByText(tree, '确认卖出信号').props.disabled).toBe(true)
     expect(tree.root.findAllByType('tr').some(row => row.props['aria-selected'] === true)).toBe(true)
 
     buttonByText(tree, '移除').props.onClick({ stopPropagation: jest.fn() })

@@ -7,11 +7,11 @@ export interface ManualPlotPoint extends ManualQuote {
 
 export const MANUAL_CHART_LAYOUT = {
   width: 960,
-  height: 320,
+  height: 360,
   plotLeft: 58,
   plotRight: 906,
   plotTop: 34,
-  plotBottom: 258
+  plotBottom: 292
 }
 
 // Keep real NAV hit targets comfortably clickable at any rendered SVG scale.
