@@ -6,7 +6,7 @@ import {
   sortManualSignals,
   validateManualSignalSequence
 } from '../manual-model'
-import { getManualChartHitCandidates, plotManualHistory } from '../manual-chart-model'
+import { getNearestManualChartPointByX, plotManualHistory } from '../manual-chart-model'
 
 const createDenseWeekdayQuotes = (): { date: string, val: number }[] => {
   const dates: string[] = []
@@ -126,7 +126,7 @@ describe('manual backtest model', () => {
     expect(invalid).toEqual(signals)
   })
 
-  it('detects both dates inside the overlapping hit area on a dense 241-point chart', () => {
+  it('uses horizontal distance alone when dense adjacent NAV points have nearly identical values', () => {
     const quotes = createDenseWeekdayQuotes()
     const points = plotManualHistory(quotes)
     const november10 = points.filter(point => point.date === '2025-11-10')[0]
@@ -138,11 +138,11 @@ describe('manual backtest model', () => {
     expect(november10.y).toBe(november11.y)
     expect(november11.x - november10.x).toBeCloseTo(3.533, 3)
 
-    const candidates = getManualChartHitCandidates(points, november10.x, november10.y)
-    expect(candidates.map(point => point.date)).toEqual(expect.arrayContaining(['2025-11-10', '2025-11-11']))
+    expect(getNearestManualChartPointByX(points, november10.x)!.date).toBe('2025-11-10')
+    expect(getNearestManualChartPointByX(points, november11.x)!.date).toBe('2025-11-11')
   })
 
-  it('keeps the selected marker and adjacent equal-NAV date as candidates inside its visible stroke edge', () => {
+  it('selects the nearest time point rather than favoring a selected marker or its vertical value', () => {
     const points = plotManualHistory(createDenseWeekdayQuotes())
     const november10 = points.filter(point => point.date === '2025-11-10')[0]
     const november11 = points.filter(point => point.date === '2025-11-11')[0]
@@ -150,8 +150,7 @@ describe('manual backtest model', () => {
 
     expect(november11.x - november10.x).toBeCloseTo(3.533, 3)
     expect(edgeClickX - november10.x).toBeCloseTo(5.2, 6)
-    expect(getManualChartHitCandidates(points, edgeClickX, november10.y, '2025-11-10', 1)
-      .map(point => point.date)).toEqual(expect.arrayContaining(['2025-11-10', '2025-11-11']))
+    expect(getNearestManualChartPointByX(points, edgeClickX)!.date).toBe('2025-11-11')
   })
 })
 
