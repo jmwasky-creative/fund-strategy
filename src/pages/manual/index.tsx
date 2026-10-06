@@ -797,6 +797,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         <dl className={styles.replaySummary}>
           <div><dt>期末总资产</dt><dd>{replayResult.summary.endingTotalAssets.toFixed(2)} 元</dd></div>
           <div><dt>现金余额</dt><dd>{replayResult.summary.endingCash.toFixed(2)} 元</dd></div>
+          <div><dt>累计红利复投</dt><dd>{replayResult.summary.totalDividendReinvested.toFixed(2)} 元（已同步计入份额）</dd></div>
           <div><dt>期末持仓估值</dt><dd>{replayResult.summary.openPositionValue.toFixed(2)} 元</dd></div>
           <div><dt>持仓状态</dt><dd>{replayResult.summary.endingPositionStatus === 'open' ? 'open / 未平仓' : 'flat / 空仓'}</dd></div>
           <div><dt>已完成交易</dt><dd>{replayResult.summary.completedTradeCount} 笔</dd></div>
@@ -830,10 +831,10 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         <h3>逐日资产快照</h3>
         <div className={styles.tableWrap}>
           <table className={styles.replayTable}>
-            <thead><tr><th>日期</th><th>净值</th><th>现金</th><th>份额</th><th>持仓估值</th><th>总资产</th><th>持仓状态</th><th>已完成交易数</th></tr></thead>
+            <thead><tr><th>日期</th><th>净值</th><th>现金</th><th>当日红利复投</th><th>份额</th><th>持仓估值</th><th>总资产</th><th>持仓状态</th><th>已完成交易数</th></tr></thead>
             <tbody>{replayResult.dailySnapshots.map(snapshot => <tr key={snapshot.date}>
               <td>{snapshot.date}</td><td>{snapshot.nav.toFixed(4)}</td><td>{snapshot.cash.toFixed(2)}</td>
-              <td>{snapshot.shares.toFixed(6)}</td><td>{snapshot.positionValue.toFixed(2)}</td><td>{snapshot.totalAssets.toFixed(2)}</td>
+              <td>{snapshot.dividendReinvestmentAmount.toFixed(2)}</td><td>{snapshot.shares.toFixed(6)}</td><td>{snapshot.positionValue.toFixed(2)}</td><td>{snapshot.totalAssets.toFixed(2)}</td>
               <td>{snapshot.positionStatus === 'open' ? 'open / 未平仓' : 'flat / 空仓'}</td><td>{snapshot.completedTradeCount}</td>
             </tr>)}</tbody>
           </table>

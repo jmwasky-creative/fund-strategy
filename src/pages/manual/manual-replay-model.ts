@@ -45,6 +45,7 @@ export interface ManualReplayDailySnapshot {
   nav: number
   cash: number
   shares: number
+  dividendReinvestmentAmount: number
   positionValue: number
   totalAssets: number
   positionStatus: 'flat' | 'open'
@@ -59,6 +60,7 @@ export interface ManualReplayResult {
     initialCash: number
     endingCash: number
     endingShares: number
+    totalDividendReinvested: number
     lastNavDate: string
     lastNav: number
     openPositionValue: number
@@ -127,8 +129,9 @@ const assertAction = (action: ManualCorporateAction, quoteDate: string) => {
   if (!action || action.date !== quoteDate || !isCalendarDate(action.date)) {
     fail(`${quoteDate} 的基金事件日期/结构无效。`)
   }
-  if (action.kind === 'share-split' && (!Number.isFinite(action.value) || action.value <= 0)) {
-    fail(`${quoteDate} 数据源报告份额拆分/折算，但没有有效份额倍数。`)
+  if (action.kind === 'share-split'
+    && (action.valueUnit !== 'share-multiplier' || !Number.isFinite(Number(action.value)) || Number(action.value) <= 0)) {
+    fail(`${quoteDate} 数据源报告份额拆分/折算，但没有可验证的正数份额倍数。`)
   }
   if (action.kind !== 'share-split' && action.kind !== 'distribution' && action.kind !== 'unclassified') {
     fail(`${quoteDate} 存在无法识别的基金事件，不能继续回放。`)
@@ -219,7 +222,8 @@ const scheduleSignal = (
  * Replay only a valid #3 contract. Signals fill on the next returned valid NAV
  * observation strictly after signal date; the selected range is never extended.
  * Buy amount is pre-fee notional; fee = notional * fee rate. Slippage adjusts NAV:
- * buy NAV * (1 + rate), sell NAV * (1 - rate). All rates are explicit percent inputs.
+ * buy NAV * (1 + rate), sell NAV * (1 - rate). Cash dividends are reinvested only
+ * when the source explicitly gives a currency amount per share. All rates are explicit.
  */
 export const runManualReplay = (
   validation: ManualSequenceValidation,
@@ -270,12 +274,15 @@ export const runManualReplay = (
   let shares = 0
   let activeTradeIndex: number | null = null
   let realizedProfit = 0
+  let totalDividendReinvested = 0
   let completedTradeCount = 0
   const disclosures: string[] = [
     `每次买入按本次显式输入的固定费前名义金额下单；卖出信号平掉单笔未平仓交易的全部份额。买卖费用 = 对应成交名义金额 × 显式输入费率，买入费用另计现金支出。`,
     `买入成交净值 = 当日净值 × (1 + 买入滑点率)；卖出成交净值 = 当日净值 × (1 - 卖出滑点率)。`,
     `信号在信号日后的下一条区间内有效净值成交；成交日期与信号日期分开记录。`,
-    `本结果为历史模拟，不会发送真实订单；数据源未提供或口径未确认的现金分红不作现金派发或红利再投假设。`
+    `仅将数据源 unitMoney 明确写为“每份……X元”的现金分红按每份现金金额确认，并按原策略公式 shares × (当日净值 + 每份红利) / 当日净值复投；未明确金额或单位、事件类型无法识别时，持仓路径明确报错，不推测。`,
+    `每个净值日期先处理已有持仓的份额事件/红利复投；原策略在 isBonus 日禁止买卖，因此本回测若订单恰落在基金事件日会明确报错，不静默成交或顺延。`,
+    `本结果为历史模拟，不会发送真实订单；红利复投的现金派发与再投入在同一净值日入账并抵销，期末现金余额不因复投而增加，复投金额单独记录。`
   ]
   const trades: ManualReplayTrade[] = sourceTrades.map(trade => ({
     entrySignalDate: trade.entrySignal.date,
@@ -299,23 +306,46 @@ export const runManualReplay = (
 
   quotes.forEach(quote => {
     const actions = quote.corporateActions || []
+    const orders = schedule[quote.date] || []
+    if (actions.length > 0 && orders.length > 0) {
+      fail(`${quote.date} 同时有基金事件和预定成交；原策略在 isBonus 日禁止买卖，不能在此日成交或擅自顺延，请调整信号日期。`)
+    }
+    let dividendReinvestmentAmount = 0
     actions.forEach(action => {
       if (shares <= 0) {
         disclosures.push(`${action.date} 数据源报告基金事件“${action.description}”；当日为空仓，未调整持仓。`)
         return
       }
       if (action.kind === 'share-split') {
-        shares *= action.value
+        shares *= Number(action.value)
         if (activeTradeIndex !== null) {
           trades[activeTradeIndex].shares = shares
         }
         disclosures.push(`${action.date} 数据源报告份额拆分/折算；按其公布倍数 ${action.value} 调整持有份额，未产生现金流。`)
         return
       }
-      fail(`${action.date} 持仓期间发生待确认基金事件“${action.description}”；现金分红/红利再投口径未确认，停止回放，不假定任何处理方式。`)
+      if (action.kind !== 'distribution'
+        || action.valueUnit !== 'cash-per-share'
+        || typeof action.value !== 'number'
+        || !Number.isFinite(action.value)
+        || action.value < 0) {
+        fail(`${action.date} 持仓期间发生无法可靠解释的基金事件“${action.description}”；缺少明确事件类型、每份现金金额或金额单位，不能安全计算红利复投。`)
+      }
+      const perShareCash = Number(action.value)
+      const reinvestedCash = shares * perShareCash
+      const reinvestedShares = shares * (quote.val + perShareCash) / quote.val
+      if (!Number.isFinite(reinvestedCash) || !Number.isFinite(reinvestedShares) || reinvestedShares <= 0) {
+        fail(`${action.date} 的现金分红复投结果无效，不能更新份额账本。`)
+      }
+      shares = reinvestedShares
+      dividendReinvestmentAmount += reinvestedCash
+      totalDividendReinvested += reinvestedCash
+      if (activeTradeIndex !== null) {
+        trades[activeTradeIndex].shares = shares
+      }
+      disclosures.push(`${action.date} 已有持仓按数据源明确的每份现金红利 ${perShareCash} 元，在当日净值 ${quote.val} 复投 ${reinvestedCash.toFixed(2)} 元；按旧策略 shares × (净值 + 每份红利) / 净值更新份额，现金派发与再投入当日抵销。`)
     })
 
-    const orders = schedule[quote.date] || []
     orders.forEach(order => {
       if (order.side === 'buy') {
         if (shares > 0 || activeTradeIndex !== null) {
@@ -371,6 +401,7 @@ export const runManualReplay = (
       nav: quote.val,
       cash,
       shares,
+      dividendReinvestmentAmount,
       positionValue,
       totalAssets: cash + positionValue,
       positionStatus: shares > 0 ? 'open' : 'flat',
@@ -404,6 +435,7 @@ export const runManualReplay = (
       initialCash: config.initialCash,
       endingCash: cash,
       endingShares: shares,
+      totalDividendReinvested,
       lastNavDate: lastQuote.date,
       lastNav: lastQuote.val,
       openPositionValue,

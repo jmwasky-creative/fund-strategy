@@ -34,6 +34,19 @@ describe('market-data adapters', () => {
     expect(result.bonus['2020-01-02']).toBe(result.all['2020-01-02'])
   })
 
+  it('preserves an explicit per-share cash dividend amount and its source description', async () => {
+    loadFundHistoryMock.mockResolvedValue([
+      { x: Date.UTC(2020, 0, 3), y: 0.9, unitMoney: '每份派现金0.1元' }
+    ])
+
+    const result = await getFundData('000001', 1)
+
+    expect(result.all['2020-01-03']).toMatchObject({
+      date: '2020-01-03', val: 0.9, bonus: 0.1, unitMoney: '每份派现金0.1元'
+    })
+    expect(result.all['2020-01-03'].isBonusPortion).toBeUndefined()
+  })
+
   it('rejects invalid fund codes and empty history rather than returning an empty backtest', async () => {
     await expect(getFundData('000001&callback=evil', 10)).rejects.toThrow('基金代码必须为 6 位数字')
     expect(loadFundHistoryMock).not.toHaveBeenCalled()

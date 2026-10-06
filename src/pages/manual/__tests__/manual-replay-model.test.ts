@@ -67,7 +67,7 @@ describe('manual replay engine', () => {
     expect(result.dailySnapshots).toHaveLength(5)
   })
 
-  it('uses explicit fee and slippage parameters and exposes the calculation disclosure', () => {
+  it('keeps fixed pre-fee notional, separate buy fee, and proportional slippage', () => {
     const result = runManualReplay(
       oneClosedTrade('2024-01-01', '2024-01-03', '2024-01-04'),
       quotes([
@@ -88,7 +88,10 @@ describe('manual replay engine', () => {
     )
 
     expect(result.trades[0].entryFillNav).toBeCloseTo(11)
+    expect(result.trades[0].entryNotional).toBe(500)
     expect(result.trades[0].entryFee).toBe(5)
+    expect(result.trades[0].shares).toBeCloseTo(500 / 11)
+    expect(result.dailySnapshots[1].cash).toBe(495)
     expect(result.trades[0].exitFillNav).toBeCloseTo(10.8)
     expect(result.trades[0].exitFee).toBeCloseTo(result.trades[0].exitNotional! * 0.02)
     expect(result.disclosures.join(' ')).toContain('成交净值')
@@ -181,13 +184,13 @@ describe('manual replay engine', () => {
     )).toThrow('资金不足')
   })
 
-  it('applies provider-reported split multipliers to an open holding and blocks unresolved cash distributions', () => {
+  it('applies provider-reported split multipliers to an open holding', () => {
     const split = runManualReplay(
       oneOpenTrade('2024-01-01', '2024-01-04'),
       quotes([
         { date: '2024-01-01', val: 10 },
         { date: '2024-01-02', val: 10 },
-        { date: '2024-01-03', val: 5, corporateActions: [{ date: '2024-01-03', kind: 'share-split', value: 2, description: '折算2份' }] },
+        { date: '2024-01-03', val: 5, corporateActions: [{ date: '2024-01-03', kind: 'share-split', value: 2, valueUnit: 'share-multiplier', description: '折算2份' }] },
         { date: '2024-01-04', val: 5 }
       ]),
       { startDate: '2024-01-01', endDate: '2024-01-04' },
@@ -195,18 +198,108 @@ describe('manual replay engine', () => {
     )
     expect(split.summary.endingShares).toBe(100)
     expect(split.summary.openPositionValue).toBe(500)
+  })
 
-    expect(() => runManualReplay(
+  it('reinvests an explicitly identified per-share cash dividend into a still-open position and updates each daily ledger', () => {
+    const result = runManualReplay(
       oneOpenTrade('2024-01-01', '2024-01-04'),
       quotes([
         { date: '2024-01-01', val: 10 },
         { date: '2024-01-02', val: 10 },
-        { date: '2024-01-03', val: 9, corporateActions: [{ date: '2024-01-03', kind: 'distribution', value: 0.1, description: '每份派现0.1元' }] },
-        { date: '2024-01-04', val: 9 }
+        { date: '2024-01-03', val: 9, corporateActions: [{ date: '2024-01-03', kind: 'distribution', value: 0.1, valueUnit: 'cash-per-share', description: '每份派现金0.1元' }] },
+        { date: '2024-01-04', val: 10 }
       ]),
       { startDate: '2024-01-01', endDate: '2024-01-04' },
+      { ...config, buyFeeRatePercent: 1, buySlippageRatePercent: 10 }
+    )
+    const sharesBeforeDividend = 500 / 11
+    const reinvestedShares = sharesBeforeDividend * (9 + 0.1) / 9
+    const dividendCash = sharesBeforeDividend * 0.1
+
+    expect(result.trades[0]).toMatchObject({
+      status: 'open', entryNotional: 500, entryFee: 5, entryFillNav: 11,
+      exitExecutionDate: null, realizedProfit: null, shares: reinvestedShares,
+      currentValue: reinvestedShares * 10
+    })
+    expect(result.dailySnapshots[2]).toMatchObject({
+      cash: 495, shares: reinvestedShares,
+      dividendReinvestmentAmount: dividendCash,
+      positionValue: reinvestedShares * 9,
+      totalAssets: 495 + reinvestedShares * 9,
+      positionStatus: 'open', completedTradeCount: 0
+    })
+    expect(result.summary).toMatchObject({
+      endingCash: 495, endingShares: reinvestedShares,
+      totalDividendReinvested: dividendCash,
+      lastNavDate: '2024-01-04', lastNav: 10,
+      openPositionValue: reinvestedShares * 10,
+      endingTotalAssets: 495 + reinvestedShares * 10,
+      completedTradeCount: 0, openTradeCount: 1, endingPositionStatus: 'open'
+    })
+    expect(result.disclosures.join(' ')).toContain('现金派发与再投入当日抵销')
+  })
+
+  it('rejects a scheduled fill on a corporate-action date instead of silently trading or shifting it', () => {
+    expect(() => runManualReplay(
+      oneClosedTrade('2024-01-01', '2024-01-02', '2024-01-03'),
+      quotes([
+        { date: '2024-01-01', val: 10 },
+        { date: '2024-01-02', val: 10 },
+        { date: '2024-01-03', val: 9, corporateActions: [{ date: '2024-01-03', kind: 'distribution', value: 0.1, valueUnit: 'cash-per-share', description: '每份派现0.1元' }] }
+      ]),
+      { startDate: '2024-01-01', endDate: '2024-01-03' },
       config
-    )).toThrow('现金分红/红利再投口径未确认')
+    )).toThrow('原策略在 isBonus 日禁止买卖')
+
+    expect(() => runManualReplay(
+      oneOpenTrade('2024-01-01', '2024-01-03'),
+      quotes([
+        { date: '2024-01-01', val: 10 },
+        { date: '2024-01-02', val: 9, corporateActions: [{ date: '2024-01-02', kind: 'distribution', value: 0.1, valueUnit: 'cash-per-share', description: '每份派现0.1元' }] },
+        { date: '2024-01-03', val: 9 }
+      ]),
+      { startDate: '2024-01-01', endDate: '2024-01-03' },
+      config
+    )).toThrow('原策略在 isBonus 日禁止买卖')
+  })
+
+  it('fails clearly when a holding encounters a distribution with unverified amount units or event type', () => {
+    const missingAmount = {
+      date: '2024-01-03', kind: 'distribution' as 'distribution', value: null,
+      valueUnit: 'unknown' as 'unknown', description: '每10份派现金1元'
+    }
+    expect(() => runManualReplay(
+      oneOpenTrade('2024-01-01', '2024-01-04'),
+      quotes([
+        { date: '2024-01-01', val: 10 }, { date: '2024-01-02', val: 10 },
+        { date: '2024-01-03', val: 9, corporateActions: [missingAmount] }, { date: '2024-01-04', val: 9 }
+      ]),
+      { startDate: '2024-01-01', endDate: '2024-01-04' }, config
+    )).toThrow('缺少明确事件类型、每份现金金额或金额单位')
+
+    expect(() => runManualReplay(
+      oneOpenTrade('2024-01-01', '2024-01-04'),
+      quotes([
+        { date: '2024-01-01', val: 10 }, { date: '2024-01-02', val: 10 },
+        { date: '2024-01-03', val: 9, corporateActions: [{
+          date: '2024-01-03', kind: 'distribution', value: null,
+          valueUnit: 'cash-per-share', description: '现金事件缺少金额'
+        }] }, { date: '2024-01-04', val: 9 }
+      ]),
+      { startDate: '2024-01-01', endDate: '2024-01-04' }, config
+    )).toThrow('缺少明确事件类型、每份现金金额或金额单位')
+
+    expect(() => runManualReplay(
+      oneOpenTrade('2024-01-01', '2024-01-04'),
+      quotes([
+        { date: '2024-01-01', val: 10 }, { date: '2024-01-02', val: 10 },
+        { date: '2024-01-03', val: 9, corporateActions: [{
+          date: '2024-01-03', kind: 'unclassified', value: 0.1,
+          valueUnit: 'unknown', description: '未知基金事件'
+        }] }, { date: '2024-01-04', val: 9 }
+      ]),
+      { startDate: '2024-01-01', endDate: '2024-01-04' }, config
+    )).toThrow('无法可靠解释的基金事件')
   })
 
   it('rejects malformed, duplicate, out-of-range or invalid NAV data', () => {
