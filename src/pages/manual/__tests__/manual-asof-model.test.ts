@@ -3,7 +3,8 @@ import {
   canAdvanceManualAsOf,
   createManualAsOfSnapshot,
   getInitialManualAsOfDate,
-  getNextManualAsOfDate
+  getNextManualAsOfDate,
+  getNextManualAsOfQuoteDate
 } from '../manual-asof-model'
 import { ManualQuote, ManualSignal } from '../manual-model'
 
@@ -67,6 +68,16 @@ describe('manual as-of replay model', () => {
     expect(after.quotes.map(quote => quote.date)).toEqual(['2024-01-05', '2024-01-08', '2024-01-11', '2024-01-12'])
     expect(after.signals.map(signal => signal.id)).toEqual([1, 2])
     expect(after.sequenceValidation.standardizedSequence!.trades[0].exitSignal!.id).toBe(2)
+  })
+
+  it('resolves execution dates only from NAV already visible in the current as-of snapshot', () => {
+    const before = createManualAsOfSnapshot(quotes, signals, query, '2024-01-11')
+    const after = createManualAsOfSnapshot(quotes, signals, query, '2024-01-18')
+    expect(getNextManualAsOfQuoteDate(before, '2024-01-05')).toBe('2024-01-08')
+    expect(getNextManualAsOfQuoteDate(before, '2024-01-11')).toBeNull()
+    expect(getNextManualAsOfQuoteDate(before, '2024-01-12')).toBeNull()
+    expect(getNextManualAsOfQuoteDate(after, '2024-01-11')).toBe('2024-01-12')
+    expect(getNextManualAsOfQuoteDate(after, '2024-01-30')).toBeNull()
   })
 
   it('future NAV changes cannot affect current snapshot, signals, or sequence validation', () => {

@@ -26,6 +26,7 @@ import {
   createManualAsOfSnapshot,
   getInitialManualAsOfDate,
   getNextManualAsOfDate,
+  getNextManualAsOfQuoteDate,
   ManualAsOfSnapshot
 } from './manual-asof-model'
 import {
@@ -70,6 +71,7 @@ const initialRange = (): { startDate: string, endDate: string } => {
 
 interface UndoSnapshot {
   signals: ManualSignal[]
+  selectedDate: string
   selectedSignalId: number | null
 }
 
@@ -104,6 +106,8 @@ interface ManualWorkspaceState {
   signals: ManualSignal[]
   selectedDate: string
   chartDateChoices: string[]
+  signalMode: ManualSignalType | null
+  hoveredDate: string
   selectedSignalId: number | null
   nextSignalId: number
   undo: UndoSnapshot | null
@@ -153,6 +157,8 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     signals: [],
     selectedDate: '',
     chartDateChoices: [],
+    signalMode: null,
+    hoveredDate: '',
     selectedSignalId: null,
     nextSignalId: 1,
     undo: null,
@@ -405,6 +411,8 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         selectedSignalId,
         selectedDate,
         chartDateChoices: [],
+        signalMode: null,
+        hoveredDate: '',
         pendingSelection: null,
         loading: false,
         error: '',
@@ -469,8 +477,56 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
   }
 
   private selectDate = (date: string) => {
-    if (hasManualQuoteDate(this.state.quotes, date)) {
+    const snapshot = this.getCurrentAsOfSnapshot()
+    if (snapshot && hasManualQuoteDate(snapshot.quotes, date)) {
       this.setState({ selectedDate: date, selectedSignalId: null, chartDateChoices: [] })
+    }
+  }
+
+  private setSignalMode = (type: ManualSignalType) => {
+    this.setState(previousState => ({
+      signalMode: previousState.signalMode === type ? null : type,
+      chartDateChoices: []
+    }))
+  }
+
+  private getChartHitCandidates = (event: React.MouseEvent<SVGSVGElement>) => {
+    const svg = event.currentTarget
+    const screenMatrix = svg.getScreenCTM()
+    if (!screenMatrix) {
+      return []
+    }
+    const pointer = svg.createSVGPoint()
+    pointer.x = event.clientX
+    pointer.y = event.clientY
+    const chartPoint = pointer.matrixTransform(screenMatrix.inverse())
+    const screenScaleX = Math.sqrt(screenMatrix.a * screenMatrix.a + screenMatrix.b * screenMatrix.b)
+    const screenScaleY = Math.sqrt(screenMatrix.c * screenMatrix.c + screenMatrix.d * screenMatrix.d)
+    const minScreenScale = Math.min(screenScaleX, screenScaleY)
+    const viewBoxUnitsPerScreenPixel = Number.isFinite(minScreenScale) && minScreenScale > 0
+      ? 1 / minScreenScale
+      : 1
+    const snapshot = this.getCurrentAsOfSnapshot()
+    return getManualChartHitCandidates(
+      plotManualHistory(snapshot ? snapshot.quotes : []),
+      chartPoint.x,
+      chartPoint.y,
+      this.state.selectedDate,
+      viewBoxUnitsPerScreenPixel
+    )
+  }
+
+  private handleChartMouseMove = (event: React.MouseEvent<SVGSVGElement>) => {
+    const candidates = this.getChartHitCandidates(event)
+    const hoveredDate = candidates.length > 0 ? candidates[0].date : ''
+    if (hoveredDate !== this.state.hoveredDate) {
+      this.setState({ hoveredDate })
+    }
+  }
+
+  private clearChartHover = () => {
+    if (this.state.hoveredDate) {
+      this.setState({ hoveredDate: '' })
     }
   }
 
@@ -483,31 +539,14 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     if (event.nativeEvent.detail === 0) {
       return
     }
-    const svg = event.currentTarget
-    const screenMatrix = svg.getScreenCTM()
-    if (!screenMatrix) {
-      return
-    }
-    const pointer = svg.createSVGPoint()
-    pointer.x = event.clientX
-    pointer.y = event.clientY
-    const chartPoint = pointer.matrixTransform(screenMatrix.inverse())
-    const screenScaleX = Math.sqrt(screenMatrix.a * screenMatrix.a + screenMatrix.b * screenMatrix.b)
-    const screenScaleY = Math.sqrt(screenMatrix.c * screenMatrix.c + screenMatrix.d * screenMatrix.d)
-    const minScreenScale = Math.min(screenScaleX, screenScaleY)
-    const viewBoxUnitsPerScreenPixel = Number.isFinite(minScreenScale) && minScreenScale > 0
-      ? 1 / minScreenScale
-      : 1
-    const candidates = getManualChartHitCandidates(
-      plotManualHistory(this.state.quotes),
-      chartPoint.x,
-      chartPoint.y,
-      this.state.selectedDate,
-      viewBoxUnitsPerScreenPixel
-    )
+    const candidates = this.getChartHitCandidates(event)
 
     if (candidates.length === 1) {
-      this.selectDate(candidates[0].date)
+      if (this.state.signalMode) {
+        this.addSignalAtDate(candidates[0].date, this.state.signalMode)
+      } else {
+        this.selectDate(candidates[0].date)
+      }
     } else if (candidates.length > 1) {
       // Preserve the current date until the user explicitly chooses one.
       this.setState({ chartDateChoices: candidates.map(point => point.date) })
@@ -519,32 +558,52 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
   private handleChartPointKeyDown = (date: string, event: KeyboardEvent<SVGCircleElement>) => {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
-      this.selectDate(date)
+      if (this.state.signalMode) {
+        this.addSignalAtDate(date, this.state.signalMode)
+      } else {
+        this.selectDate(date)
+      }
     }
   }
 
-  private addSignal = (type: ManualSignalType) => {
-    const { selectedDate, quotes, chartDateChoices } = this.state
-    if (chartDateChoices.length > 0 || !hasManualQuoteDate(quotes, selectedDate)) {
+  private addSignalAtDate = (date: string, type: ManualSignalType) => {
+    const snapshot = this.getCurrentAsOfSnapshot()
+    if (!snapshot || !hasManualQuoteDate(snapshot.quotes, date)) {
       return
     }
     this.invalidateReplayInputs()
     this.setState((previousState) => {
       const signal: ManualSignal = {
         id: previousState.nextSignalId,
-        date: selectedDate,
+        date,
         type
       }
       return {
         signals: sortManualSignals(previousState.signals.concat(signal)),
+        selectedDate: date,
         selectedSignalId: signal.id,
         nextSignalId: previousState.nextSignalId + 1,
+        chartDateChoices: [],
         undo: {
           signals: previousState.signals.slice(),
+          selectedDate: previousState.selectedDate,
           selectedSignalId: previousState.selectedSignalId
         }
       }
     })
+  }
+
+  private addSignal = (type: ManualSignalType) => this.addSignalAtDate(this.state.selectedDate, type)
+
+  private resolveChartDateChoice = (date: string) => {
+    if (!this.state.chartDateChoices.includes(date)) {
+      return
+    }
+    if (this.state.signalMode) {
+      this.addSignalAtDate(date, this.state.signalMode)
+    } else {
+      this.selectDate(date)
+    }
   }
 
   private removeSignal = (id: number, event: React.MouseEvent<HTMLElement>) => {
@@ -555,6 +614,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       selectedSignalId: previousState.selectedSignalId === id ? null : previousState.selectedSignalId,
       undo: {
         signals: previousState.signals.slice(),
+        selectedDate: previousState.selectedDate,
         selectedSignalId: previousState.selectedSignalId
       }
     }))
@@ -562,6 +622,32 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
 
   private selectSignal = (signal: ManualSignal) => {
     this.setState({ selectedSignalId: signal.id, selectedDate: signal.date, chartDateChoices: [] })
+  }
+
+  private handleChartSignalClick = (signal: ManualSignal, event: React.MouseEvent<SVGGElement>) => {
+    event.stopPropagation()
+    this.selectSignal(signal)
+  }
+
+  private handleChartSignalKeyDown = (signal: ManualSignal, event: KeyboardEvent<SVGGElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      event.stopPropagation()
+      this.selectSignal(signal)
+    }
+  }
+
+  private handleSignalRowKeyDown = (signal: ManualSignal, event: KeyboardEvent<HTMLTableRowElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      this.selectSignal(signal)
+    }
+  }
+
+  private handleSignalRemoveKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.stopPropagation()
+    }
   }
 
   private getCurrentReplayResult = (): ManualReplayResult | null => this.state.replayResult
@@ -599,6 +685,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     this.invalidateReplayInputs()
     this.setState({
       signals: snapshot.signals,
+      selectedDate: snapshot.selectedDate,
       selectedSignalId: snapshot.selectedSignalId,
       undo: null
     })
@@ -757,11 +844,18 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
   }
 
   private renderHistoryChart = () => {
-    const { selectedDate, selectedSignalId, selectedReplayTradeIndex } = this.state
+    const { selectedDate, selectedSignalId, selectedReplayTradeIndex, hoveredDate, signalMode } = this.state
     const snapshot = this.getCurrentAsOfSnapshot()
     const quotes = snapshot ? snapshot.quotes : []
     const signals = snapshot ? snapshot.signals : []
     const plotted = plotManualHistory(quotes)
+    const hoveredPoint = hoveredDate ? plotted.find(point => point.date === hoveredDate) || null : null
+    const hoverTooltipX = hoveredPoint
+      ? Math.max(PLOT_LEFT, Math.min(hoveredPoint.x + 12, PLOT_RIGHT - 220))
+      : 0
+    const hoverTooltipY = hoveredPoint
+      ? Math.max(PLOT_TOP + 4, Math.min(hoveredPoint.y - 34, PLOT_BOTTOM - 30))
+      : 0
     if (plotted.length === 0) {
       return null
     }
@@ -790,6 +884,8 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         role="group"
         aria-label="基金历史单位净值图；选择一个实际净值点以编辑手动买卖信号"
         onClick={this.handleChartClick}
+        onMouseMove={this.handleChartMouseMove}
+        onMouseLeave={this.clearChartHover}
       >
         <rect x="0" y="0" width={CHART_WIDTH} height={CHART_HEIGHT} fill="transparent" pointerEvents="all" aria-hidden="true" />
         <line x1={PLOT_LEFT} y1={PLOT_BOTTOM} x2={PLOT_RIGHT} y2={PLOT_BOTTOM} className={styles.axis} />
@@ -819,6 +915,15 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         {plotted.length > 1
           ? <polyline points={pointsAttribute} className={styles.line} />
           : null}
+        {hoveredPoint ? <g className={styles.hoverReadout} role="status" aria-label={`悬停真实净值：${hoveredPoint.date}，单位净值 ${hoveredPoint.val.toFixed(4)}`} pointerEvents="none">
+          <line x1={hoveredPoint.x} y1={PLOT_TOP} x2={hoveredPoint.x} y2={PLOT_BOTTOM} className={styles.crosshair} />
+          <line x1={PLOT_LEFT} y1={hoveredPoint.y} x2={PLOT_RIGHT} y2={hoveredPoint.y} className={styles.crosshair} />
+          <circle cx={hoveredPoint.x} cy={hoveredPoint.y} r={6} className={styles.hoveredPoint} />
+          <rect x={hoverTooltipX} y={hoverTooltipY} width={216} height={24} rx={3} className={styles.hoverTooltip} />
+          <text x={hoverTooltipX + 8} y={hoverTooltipY + 16} className={styles.hoverTooltipText}>
+            {hoveredPoint.date} · 单位净值 {hoveredPoint.val.toFixed(4)}
+          </text>
+        </g> : null}
         {plotted.map(point => {
           const isSelected = selectedDate === point.date
           const dateSignals = signalsByDate[point.date] || []
@@ -830,6 +935,13 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
               const offset = (index - (dateSignals.length - 1) / 2) * 15
               const markerY = Math.max(18, point.y - 20)
               const signalIssues = issuesBySignalId[signal.id] || []
+              const nextExecutionDate = snapshot ? getNextManualAsOfQuoteDate(snapshot, signal.date) : null
+              const executionDateLabel = nextExecutionDate
+                ? nextExecutionDate
+                : snapshot && snapshot.asOfDate < snapshot.selectedEndDate
+                  ? '尚未在当前 as-of 范围内揭示'
+                  : '所选区间内无下一有效净值'
+              const isSelectedSignal = selectedSignalId === signal.id
               const issueLabel = signalIssues.length > 0
                 ? `；校验提示：${signalIssues.map(issue => issue.message).join('；')}`
                 : openSignalIds.has(signal.id)
@@ -837,17 +949,23 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
                   : '；序列校验通过'
               return <g
                 key={signal.id}
-                role="img"
-                aria-label={`${signal.date} ${signal.type === 'buy' ? '买入' : '卖出'}点${issueLabel}`}
+                role="button"
+                tabIndex={0}
+                aria-pressed={isSelectedSignal}
+                aria-label={`${signal.date} ${signal.type === 'buy' ? '买入' : '卖出'}信号日；下一有效净值成交日 ${executionDateLabel}${issueLabel}`}
+                onClick={event => this.handleChartSignalClick(signal, event)}
+                onKeyDown={event => this.handleChartSignalKeyDown(signal, event)}
               >
                 <circle
                   cx={point.x + offset}
                   cy={markerY}
-                  r={8}
+                  r={isSelectedSignal ? 10 : 8}
                   fill={signal.type === 'buy' ? '#237804' : '#cf1322'}
-                  className={signalIssues.length > 0
-                    ? `${styles.signalMarker} ${styles.invalidSignalMarker}`
-                    : styles.signalMarker}
+                  className={[
+                    styles.signalMarker,
+                    signalIssues.length > 0 ? styles.invalidSignalMarker : '',
+                    isSelectedSignal ? styles.selectedSignalMarker : ''
+                  ].filter(Boolean).join(' ')}
                 />
                 <text x={point.x + offset} y={markerY + 3} textAnchor="middle" className={styles.signalMarkerText}>
                   {signal.type === 'buy' ? '买' : '卖'}
@@ -909,7 +1027,9 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
               className={styles.quotePoint}
               role="button"
               tabIndex={0}
-              aria-label={`选择净值日期 ${point.date}，单位净值 ${point.val.toFixed(4)}`}
+              aria-label={signalMode
+                ? `在真实净值日 ${point.date}，单位净值 ${point.val.toFixed(4)} 添加${signalMode === 'buy' ? '买入' : '卖出'}信号`
+                : `选择真实净值日期 ${point.date}，单位净值 ${point.val.toFixed(4)}`}
               onKeyDown={event => this.handleChartPointKeyDown(point.date, event)}
             />
           </g>
@@ -922,7 +1042,8 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         <span><i className={styles.sellLegend} />卖出点</span>
         <span><i className={styles.holdingIntervalLegend} />实际持仓区间（买入成交至卖出成交/期末）</span>
         <span>空心圆/方块为买/卖信号日；实心三角/菱形为买/卖成交日。</span>
-        <span>图上重叠点会先显示候选日期；也可用下方选项精确选择实际净值交易日。</span>
+        <span>图上点位命中区已扩大；重叠点会显示真实 NAV 候选日期。</span>
+        <span>信号标记位于信号日，成交日按下一条已揭示的有效 NAV 显示在点位清单中。</span>
         <span>红色描边点位存在校验问题或待确认规则；详情见清单。</span>
       </div>
       {selectedSignalId !== null
@@ -942,6 +1063,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       activeQuery,
       selectedDate,
       chartDateChoices,
+      signalMode,
       selectedSignalId,
       selectedReplayTradeIndex,
       undo,
@@ -1086,6 +1208,27 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
             <Button disabled={!canAdvanceAsOf} onClick={this.advanceAsOf}>下一周</Button>
           </div>
           <p className={styles.asOfNotice}>按 7 个日历日逐步累计揭示历史净值；当前图表、信号和回测仅使用此截止日及之前的数据。此功能模拟历史当时可见数据，不承诺源 NAV 的实际发布时间或修订信息（NAV 数据可能后补）。</p>
+          {quotes.length > 0 ? <div>
+            <div className={styles.signalModeControls} role="group" aria-label="选择买入或卖出信号模式">
+              <strong>先选信号模式，再点击图上的真实 NAV 点</strong>
+              <Button
+                type={signalMode === 'buy' ? 'primary' : 'default'}
+                aria-pressed={signalMode === 'buy'}
+                onClick={() => this.setSignalMode('buy')}
+              >买入信号模式</Button>
+              <Button
+                type={signalMode === 'sell' ? 'danger' : 'default'}
+                aria-pressed={signalMode === 'sell'}
+                onClick={() => this.setSignalMode('sell')}
+              >卖出信号模式</Button>
+              {signalMode ? <Button onClick={() => this.setState({ signalMode: null, chartDateChoices: [] })}>退出信号模式</Button> : null}
+            </div>
+            <p className={styles.signalModeHint} role="status" aria-live="polite">
+              {signalMode
+                ? `当前为${signalMode === 'buy' ? '买入' : '卖出'}模式；点击任一真实净值点即可在该交易日添加信号。`
+                : '尚未选择信号模式；点击净值点只会定位日期，不会新增信号。'}
+            </p>
+          </div> : null}
           {quotes.length === 0 ? <p className={styles.chartSummary}>当前 as-of 窗口内暂无实际净值交易日；如仍有后续区间数据，可点击“下一周”继续揭示。</p> : null}
           {this.renderHistoryChart()}
           {chartDateChoices.length > 0 ? <div className={styles.chartDisambiguation} role="group" aria-label="选择图表重叠区域对应的净值日期" aria-live="polite">
@@ -1093,7 +1236,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
             <div className={styles.chartDateOptions}>
               {chartDateChoices.map(date => {
                 const quote = quotes.find(item => item.date === date)
-                return quote ? <Button key={date} size="small" onClick={() => this.selectDate(date)}>
+                return quote ? <Button key={date} size="small" onClick={() => this.resolveChartDateChoice(date)}>
                   {date} · 净值 {quote.val.toFixed(4)}
                 </Button> : null
               })}
@@ -1118,21 +1261,25 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
             </Select>
           </label>
           <div className={styles.signalActions}>
-            <Button type="primary" disabled={!selectedQuote || chartDateChoices.length > 0} onClick={() => this.addSignal('buy')}>添加买入点</Button>
-            <Button type="danger" disabled={!selectedQuote || chartDateChoices.length > 0} onClick={() => this.addSignal('sell')}>添加卖出点</Button>
             <Button disabled={!undo} onClick={this.undoLastEdit}>撤销最近一次点位操作</Button>
           </div>
         </Card>
 
         <Card title={`点位清单（${signals.length}）`} className={styles.listCard}>
           {orderedSignals.length === 0
-            ? <p className={styles.emptyList}>尚未添加手动买卖点。先从图上选择一个实际净值日期，再添加信号。</p>
+            ? <p className={styles.emptyList}>尚未添加手动买卖点。先在图上方选择买入或卖出信号模式，再点击真实净值点。</p>
             : <div className={styles.tableWrap}>
               <table className={styles.signalTable}>
-                <thead><tr><th>信号</th><th>日期</th><th>校验提示</th><th>操作</th></tr></thead>
+                <thead><tr><th>信号</th><th>信号日</th><th>下一有效 NAV 成交日</th><th>校验提示</th><th>操作</th></tr></thead>
                 <tbody>
                   {orderedSignals.map(signal => {
                     const signalIssues = issuesBySignalId[signal.id] || []
+                    const executionDate = snapshot ? getNextManualAsOfQuoteDate(snapshot, signal.date) : null
+                    const executionDateLabel = executionDate
+                      ? executionDate
+                      : snapshot && snapshot.asOfDate < snapshot.selectedEndDate
+                        ? '待后续 as-of 揭示；不推断未来日期'
+                        : '所选区间内无下一有效净值'
                     const rowClass = [
                       selectedSignalId === signal.id ? styles.selectedRow : '',
                       signalIssues.length > 0 ? styles.invalidSignalRow : ''
@@ -1141,11 +1288,16 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
                       key={signal.id}
                       className={rowClass}
                       onClick={() => this.selectSignal(signal)}
+                      onKeyDown={event => this.handleSignalRowKeyDown(signal, event)}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`定位${signal.type === 'buy' ? '买入' : '卖出'}信号；信号日 ${signal.date}；成交日 ${executionDateLabel}`}
                       aria-selected={selectedSignalId === signal.id}
                       aria-describedby={signalIssues.length > 0 ? `signal-validation-${signal.id}` : undefined}
                     >
                       <td><span className={signal.type === 'buy' ? styles.buyType : styles.sellType}>{signal.type === 'buy' ? '买入' : '卖出'}</span></td>
                       <td>{signal.date}</td>
+                      <td className={executionDate ? styles.executionDate : styles.pendingExecutionDate}>{executionDateLabel}</td>
                       <td>
                         {signalIssues.length > 0
                           ? <ul id={`signal-validation-${signal.id}`} className={styles.validationIssueList}>
@@ -1153,13 +1305,13 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
                           </ul>
                           : <span className={styles.validSignal}>{openSignalIds.has(signal.id) ? '期末未平仓（尚未估值）' : '序列有效'}</span>}
                       </td>
-                      <td><Button size="small" onClick={event => this.removeSignal(signal.id, event)}>移除</Button></td>
+                      <td><Button size="small" onClick={event => this.removeSignal(signal.id, event)} onKeyDown={this.handleSignalRemoveKeyDown}>移除</Button></td>
                     </tr>
                   })}
                 </tbody>
               </table>
             </div>}
-          <p className={styles.disclaimer}>此清单记录本地手动回测输入；只有显式填写参数并主动运行后才执行历史模拟，不会提交任何真实订单。</p>
+          <p className={styles.disclaimer}>成交日按 #4 的“信号日后下一条有效 NAV”规则，仅从当前 as-of 已揭示数据确定；未揭示时显示待揭示状态，不推算未来日期。此清单记录本地手动回测输入；只有显式填写参数并主动运行后才执行历史模拟，不会提交任何真实订单。</p>
         </Card>
       </div> : null}
 

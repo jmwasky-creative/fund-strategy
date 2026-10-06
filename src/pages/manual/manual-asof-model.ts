@@ -105,3 +105,17 @@ export const createCurrentManualAsOfSnapshot = (
   query: ManualQuery,
   asOfDate: string
 ): ManualAsOfSnapshot => createManualAsOfSnapshot(historyQuotes, allSignals, query, asOfDate)
+
+/** Resolve a signal's next execution NAV only from the already revealed snapshot. */
+export const getNextManualAsOfQuoteDate = (
+  snapshot: ManualAsOfSnapshot,
+  signalDate: string
+): string | null => {
+  if (signalDate < snapshot.startDate || signalDate > snapshot.asOfDate) {
+    return null
+  }
+  const nextQuote = snapshot.quotes.find(quote => quote.date > signalDate
+    && quote.date <= snapshot.asOfDate
+    && quote.date <= snapshot.selectedEndDate)
+  return nextQuote ? nextQuote.date : null
+}
