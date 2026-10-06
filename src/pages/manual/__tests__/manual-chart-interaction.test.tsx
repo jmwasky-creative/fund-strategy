@@ -739,6 +739,40 @@ describe('manual as-of replay page', () => {
     tree.unmount()
   })
 
+  it('advances through the selected range without later NAV and keeps eligibility independent of hidden history', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const historyWithoutFutureNav = asOfQuotes.slice(0, 2)
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-01', endDate: '2024-01-22' },
+      historyQuotes: historyWithoutFutureNav,
+      quotes: historyWithoutFutureNav,
+      asOfDate: '2024-01-07',
+      signals: [],
+      selectedDate: '2024-01-04'
+    })
+
+    expect(page.canAdvanceAsOf()).toBe(true)
+    page.setState({ historyQuotes: asOfQuotes })
+    expect(page.canAdvanceAsOf()).toBe(true)
+    page.setState({ historyQuotes: historyWithoutFutureNav })
+
+    buttonByText(tree, '下一周').props.onClick()
+    expect(page.state.asOfDate).toBe('2024-01-14')
+    expect(buttonByText(tree, '下一周').props.disabled).toBe(false)
+    expect(page.getCurrentAsOfSnapshot().quotes.map((quote: ManualQuote) => quote.date))
+      .toEqual(['2024-01-01', '2024-01-04'])
+
+    buttonByText(tree, '下一周').props.onClick()
+    expect(page.state.asOfDate).toBe('2024-01-21')
+    expect(buttonByText(tree, '下一周').props.disabled).toBe(false)
+    buttonByText(tree, '下一周').props.onClick()
+    expect(page.state.asOfDate).toBe('2024-01-22')
+    expect(buttonByText(tree, '下一周').props.disabled).toBe(true)
+
+    tree.unmount()
+  })
+
   it('passes only the current filtered NAV/signal snapshot and as-of range to the replay engine', async () => {
     const tree = renderer.create(<ManualBacktestPage />)
     const page = tree.getInstance() as any

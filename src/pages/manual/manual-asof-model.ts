@@ -43,10 +43,23 @@ export const getInitialManualAsOfDate = (startDate: string, endDate: string): st
   return firstWeekEnd < endDate ? firstWeekEnd : endDate
 }
 
-export const getNextManualAsOfDate = (currentAsOfDate: string, selectedEndDate: string): string | null => {
-  if (Number.isNaN(parseCalendarDate(currentAsOfDate))
-    || Number.isNaN(parseCalendarDate(selectedEndDate))
-    || currentAsOfDate >= selectedEndDate) {
+const isValidManualAsOfRange = (startDate: string, currentAsOfDate: string, selectedEndDate: string): boolean => {
+  const startTime = parseCalendarDate(startDate)
+  const currentTime = parseCalendarDate(currentAsOfDate)
+  const endTime = parseCalendarDate(selectedEndDate)
+  return Number.isFinite(startTime)
+    && Number.isFinite(currentTime)
+    && Number.isFinite(endTime)
+    && startTime <= currentTime
+    && currentTime < endTime
+}
+
+export const getNextManualAsOfDate = (
+  startDate: string,
+  currentAsOfDate: string,
+  selectedEndDate: string
+): string | null => {
+  if (!isValidManualAsOfRange(startDate, currentAsOfDate, selectedEndDate)) {
     return null
   }
   const nextDate = addCalendarDays(currentAsOfDate, 7)
@@ -54,13 +67,10 @@ export const getNextManualAsOfDate = (currentAsOfDate: string, selectedEndDate: 
 }
 
 export const canAdvanceManualAsOf = (
-  historyQuotes: ManualQuote[],
+  startDate: string,
   currentAsOfDate: string,
   selectedEndDate: string
-): boolean => {
-  const nextDate = getNextManualAsOfDate(currentAsOfDate, selectedEndDate)
-  return Boolean(nextDate && historyQuotes.some(quote => quote.date > currentAsOfDate && quote.date <= selectedEndDate))
-}
+): boolean => isValidManualAsOfRange(startDate, currentAsOfDate, selectedEndDate)
 
 export const createManualAsOfSnapshot = (
   historyQuotes: ManualQuote[],

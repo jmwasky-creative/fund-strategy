@@ -35,17 +35,20 @@ describe('manual as-of replay model', () => {
   })
 
   it('advances by seven calendar days cumulatively and clips the final partial week to the chosen end', () => {
-    expect(getNextManualAsOfDate('2024-01-11', '2024-01-31')).toBe('2024-01-18')
-    expect(getNextManualAsOfDate('2024-01-18', '2024-01-31')).toBe('2024-01-25')
-    expect(getNextManualAsOfDate('2024-01-25', '2024-01-31')).toBe('2024-01-31')
-    expect(getNextManualAsOfDate('2024-01-31', '2024-01-31')).toBeNull()
-    expect(getNextManualAsOfDate('bad-date', '2024-01-31')).toBeNull()
+    expect(getNextManualAsOfDate('2024-01-05', '2024-01-11', '2024-01-31')).toBe('2024-01-18')
+    expect(getNextManualAsOfDate('2024-01-05', '2024-01-18', '2024-01-31')).toBe('2024-01-25')
+    expect(getNextManualAsOfDate('2024-01-05', '2024-01-25', '2024-01-31')).toBe('2024-01-31')
+    expect(getNextManualAsOfDate('2024-01-05', '2024-01-31', '2024-01-31')).toBeNull()
+    expect(getNextManualAsOfDate('2024-01-05', 'bad-date', '2024-01-31')).toBeNull()
   })
 
-  it('disables progression when no further in-range NAV exists', () => {
-    expect(canAdvanceManualAsOf(quotes, '2024-01-11', '2024-01-31')).toBe(true)
-    expect(canAdvanceManualAsOf([{ date: '2024-01-11', val: 1.02 }], '2024-01-11', '2024-01-31')).toBe(false)
-    expect(canAdvanceManualAsOf(quotes, '2024-01-31', '2024-01-31')).toBe(false)
+  it('bases progression eligibility only on a valid date range, not on NAV availability', () => {
+    expect(canAdvanceManualAsOf('2024-01-05', '2024-01-11', '2024-01-31')).toBe(true)
+    expect(canAdvanceManualAsOf('2024-01-05', '2024-01-31', '2024-01-31')).toBe(false)
+    expect(canAdvanceManualAsOf('2024-01-20', '2024-01-11', '2024-01-31')).toBe(false)
+    expect(canAdvanceManualAsOf('2024-02-01', '2024-01-11', '2024-01-31')).toBe(false)
+    expect(canAdvanceManualAsOf('bad-date', '2024-01-11', '2024-01-31')).toBe(false)
+    expect(canAdvanceManualAsOf('2024-01-05', '2024-01-11', 'bad-date')).toBe(false)
   })
 
   it('creates one current snapshot excluding pre-range and future NAV/signals from every derived input', () => {

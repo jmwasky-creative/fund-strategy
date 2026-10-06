@@ -240,12 +240,12 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
   }
 
   private canAdvanceAsOf = (): boolean => {
-    const snapshot = this.getCurrentAsOfSnapshot()
-    if (!snapshot || !this.state.activeQuery) {
+    const query = this.state.activeQuery
+    if (!query) {
       return false
     }
-    const historyQuotes = this.state.historyQuotes.length > 0 ? this.state.historyQuotes : this.state.quotes
-    return canAdvanceManualAsOf(historyQuotes, snapshot.asOfDate, this.state.activeQuery.endDate)
+    const currentAsOfDate = this.state.asOfDate || query.endDate
+    return canAdvanceManualAsOf(query.startDate, currentAsOfDate, query.endDate)
   }
 
   private getSignalIssuesById = (validation: ManualSequenceValidation): { [key: number]: ManualSequenceIssue[] } => {
@@ -427,10 +427,10 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         ? previousState.historyQuotes
         : previousState.quotes
       const currentAsOfDate = previousState.asOfDate || query.endDate
-      if (!canAdvanceManualAsOf(historyQuotes, currentAsOfDate, query.endDate)) {
+      if (!canAdvanceManualAsOf(query.startDate, currentAsOfDate, query.endDate)) {
         return null
       }
-      const nextAsOfDate = getNextManualAsOfDate(currentAsOfDate, query.endDate)
+      const nextAsOfDate = getNextManualAsOfDate(query.startDate, currentAsOfDate, query.endDate)
       if (!nextAsOfDate) {
         return null
       }
