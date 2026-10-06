@@ -17,6 +17,7 @@ jest.mock('antd/es/button', () => {
       type: 'button',
       disabled: props.disabled,
       onClick: props.onClick,
+      onKeyDown: props.onKeyDown,
       'aria-pressed': props['aria-pressed']
     }, props.children)
   }
@@ -179,6 +180,108 @@ describe('manual chart date selection', () => {
     buttonByText(tree, '撤销最近一次点位操作').props.onClick()
     expect(page.state.signals).toHaveLength(2)
     expect(page.state.signals[1].type).toBe('sell')
+
+    tree.unmount()
+  })
+
+  it('removes only the signal when its nested button is keyboard-activated', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const quotes = [
+      { date: '2024-01-02', val: 1.02 },
+      { date: '2024-01-03', val: 1.03 }
+    ]
+    const signals = [
+      { id: 1, date: '2024-01-02', type: 'buy' },
+      { id: 2, date: '2024-01-03', type: 'sell' }
+    ]
+
+    ;['Enter', ' '].forEach(key => {
+      page.setState({
+        activeQuery: { fundCode: '260108', startDate: '2024-01-02', endDate: '2024-01-03' },
+        quotes,
+        signals,
+        selectedDate: '2024-01-03',
+        selectedSignalId: 2,
+        nextSignalId: 3,
+        undo: null
+      })
+
+      const signalRow = tree.root.findAllByType('tr').filter(row =>
+        row.props.role === 'button' && String(row.props['aria-label']).includes('2024-01-02')
+      )[0]
+      const removeButton = signalRow.findByType('button')
+      const keyEvent = {
+        key,
+        stopPropagation: jest.fn(),
+        preventDefault: jest.fn()
+      }
+
+      removeButton.props.onKeyDown(keyEvent)
+      if (keyEvent.stopPropagation.mock.calls.length === 0) {
+        signalRow.props.onKeyDown(keyEvent)
+      }
+      expect(keyEvent.stopPropagation).toHaveBeenCalled()
+      expect(keyEvent.preventDefault).not.toHaveBeenCalled()
+      expect(page.state.selectedSignalId).toBe(2)
+      expect(page.state.selectedDate).toBe('2024-01-03')
+
+      // Native button keyboard activation dispatches a click after Enter/Space.
+      removeButton.props.onClick({ stopPropagation: jest.fn() })
+      expect(page.state.signals.map((signal: any) => signal.id)).toEqual([2])
+      expect(page.state.selectedSignalId).toBe(2)
+      expect(page.state.selectedDate).toBe('2024-01-03')
+    })
+
+    tree.unmount()
+  })
+
+  it('restores the selected NAV date when undoing an add made on another date', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const quotes = [
+      { date: '2024-01-02', val: 1.02 },
+      { date: '2024-01-03', val: 1.03 }
+    ]
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-02', endDate: '2024-01-03' },
+      quotes,
+      signals: [],
+      selectedDate: '2024-01-02',
+      selectedSignalId: null,
+      nextSignalId: 1,
+      undo: null
+    })
+
+    page.addSignal('buy')
+    const signalA = page.state.signals[0]
+    page.selectSignal(signalA)
+    expect(page.state.selectedSignalId).toBe(signalA.id)
+    expect(page.state.selectedDate).toBe('2024-01-02')
+
+    page.setSignalMode('sell')
+    const pointB = tree.root.findAllByType('circle').filter(circle =>
+      circle.props.role === 'button' && String(circle.props['aria-label']).includes('2024-01-03')
+    )[0]
+    pointB.props.onKeyDown({ key: 'Enter', preventDefault: jest.fn() })
+    expect(page.state.selectedDate).toBe('2024-01-03')
+    expect(page.state.selectedSignalId).toBe(2)
+    expect(page.state.signals).toHaveLength(2)
+
+    buttonByText(tree, '撤销最近一次点位操作').props.onClick()
+
+    expect(page.state.signals.map((signal: any) => signal.id)).toEqual([signalA.id])
+    expect(page.state.selectedSignalId).toBe(signalA.id)
+    expect(page.state.selectedDate).toBe('2024-01-02')
+    expect(tree.root.findAllByType('tr').filter(row => row.props['aria-selected'] === true)).toHaveLength(1)
+    const selectedPoint = tree.root.findAllByType('circle').filter(circle =>
+      circle.props.role === 'button' && String(circle.props['aria-label']).includes('2024-01-02')
+    )[0]
+    const otherPoint = tree.root.findAllByType('circle').filter(circle =>
+      circle.props.role === 'button' && String(circle.props['aria-label']).includes('2024-01-03')
+    )[0]
+    expect(selectedPoint.props.r).toBe(5)
+    expect(otherPoint.props.r).toBe(3.5)
 
     tree.unmount()
   })

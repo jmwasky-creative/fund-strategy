@@ -71,6 +71,7 @@ const initialRange = (): { startDate: string, endDate: string } => {
 
 interface UndoSnapshot {
   signals: ManualSignal[]
+  selectedDate: string
   selectedSignalId: number | null
 }
 
@@ -585,6 +586,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         chartDateChoices: [],
         undo: {
           signals: previousState.signals.slice(),
+          selectedDate: previousState.selectedDate,
           selectedSignalId: previousState.selectedSignalId
         }
       }
@@ -612,6 +614,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       selectedSignalId: previousState.selectedSignalId === id ? null : previousState.selectedSignalId,
       undo: {
         signals: previousState.signals.slice(),
+        selectedDate: previousState.selectedDate,
         selectedSignalId: previousState.selectedSignalId
       }
     }))
@@ -638,6 +641,12 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
       this.selectSignal(signal)
+    }
+  }
+
+  private handleSignalRemoveKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.stopPropagation()
     }
   }
 
@@ -676,6 +685,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     this.invalidateReplayInputs()
     this.setState({
       signals: snapshot.signals,
+      selectedDate: snapshot.selectedDate,
       selectedSignalId: snapshot.selectedSignalId,
       undo: null
     })
@@ -1295,7 +1305,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
                           </ul>
                           : <span className={styles.validSignal}>{openSignalIds.has(signal.id) ? '期末未平仓（尚未估值）' : '序列有效'}</span>}
                       </td>
-                      <td><Button size="small" onClick={event => this.removeSignal(signal.id, event)}>移除</Button></td>
+                      <td><Button size="small" onClick={event => this.removeSignal(signal.id, event)} onKeyDown={this.handleSignalRemoveKeyDown}>移除</Button></td>
                     </tr>
                   })}
                 </tbody>
