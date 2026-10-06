@@ -225,6 +225,26 @@
   line-height: 1.6;
 }
 
+.signalModeControls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+
+.signalModeControls strong {
+  margin-right: 4px;
+  color: #172554;
+  font-size: 13px;
+}
+
+.signalModeHint {
+  margin: 4px 0 10px;
+  color: #697586;
+  font-size: 12px;
+}
+
 .chartWrap {
   width: 100%;
 }
@@ -256,6 +276,32 @@
   vector-effect: non-scaling-stroke;
 }
 
+.crosshair {
+  stroke: #687385;
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  opacity: 0.75;
+  vector-effect: non-scaling-stroke;
+}
+
+.hoveredPoint {
+  fill: #fff;
+  stroke: #172554;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.hoverTooltip {
+  fill: #172554;
+  opacity: 0.94;
+}
+
+.hoverTooltipText {
+  fill: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .quotePoint {
   fill: #3157a4;
   stroke: #fff;
@@ -281,12 +327,18 @@
 .signalMarker {
   stroke: #fff;
   stroke-width: 1;
+  cursor: pointer;
   vector-effect: non-scaling-stroke;
 }
 
 .invalidSignalMarker {
   stroke: #a8071a;
   stroke-width: 3;
+}
+
+.selectedSignalMarker {
+  stroke: #fa8c16;
+  stroke-width: 3.5;
 }
 
 .signalMarkerText {
@@ -400,6 +452,11 @@
   cursor: pointer;
 }
 
+.signalTable tbody tr:focus {
+  outline: 2px solid #3157a4;
+  outline-offset: -2px;
+}
+
 .signalTable tbody tr:hover,
 .selectedRow {
   background: #f1f5ff;
@@ -409,7 +466,8 @@
   background: #fff2f0;
 }
 
-.signalTable td:nth-child(3) {
+.signalTable td:nth-child(3),
+.signalTable td:nth-child(4) {
   min-width: 190px;
   white-space: normal;
 }
@@ -439,6 +497,16 @@
 .sellType {
   color: #cf1322;
   font-weight: 600;
+}
+
+.executionDate {
+  color: #172554;
+  font-weight: 600;
+}
+
+.pendingExecutionDate {
+  color: #ad6800;
+  font-size: 12px;
 }
 
 .disclaimer {

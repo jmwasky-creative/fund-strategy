@@ -16,7 +16,8 @@ jest.mock('antd/es/button', () => {
     default: (props: any) => ReactModule.createElement('button', {
       type: 'button',
       disabled: props.disabled,
-      onClick: props.onClick
+      onClick: props.onClick,
+      'aria-pressed': props['aria-pressed']
     }, props.children)
   }
 })
@@ -75,7 +76,7 @@ const renderedText = (instance: any): string => {
 }
 
 const invalidChartPoints = (tree: ReactTestRenderer): ReactTestInstance[] => tree.root.findAllByType('g').filter(point =>
-  point.props.role === 'img' && String(point.props['aria-label']).indexOf('校验提示') >= 0
+  point.props.role === 'button' && String(point.props['aria-label']).indexOf('校验提示') >= 0
 )
 
 const flushReplayTimers = async () => {
@@ -133,7 +134,7 @@ describe('manual chart date selection', () => {
     })
 
     const selectedMarker = tree.root.findAllByType('circle').filter(marker =>
-      marker.props['aria-label'] === '选择净值日期 2025-11-10，单位净值 1.1210'
+      marker.props['aria-label'] === '选择真实净值日期 2025-11-10，单位净值 1.1210'
     )[0]
     const chart = tree.root.findAllByType('svg').filter(svg => svg.props['aria-label'])[0]
     const chartSvg = {
@@ -159,15 +160,15 @@ describe('manual chart date selection', () => {
     expect(page.state.chartDateChoices).toEqual(expect.arrayContaining(['2025-11-10', '2025-11-11']))
     expect(buttonByText(tree, '2025-11-10 · 净值 1.1210')).toBeTruthy()
     expect(buttonByText(tree, '2025-11-11 · 净值 1.1210')).toBeTruthy()
-    expect(buttonByText(tree, '添加买入点').props.disabled).toBe(true)
+    expect(buttonByText(tree, '买入信号模式')).toBeTruthy()
 
     buttonByText(tree, '2025-11-10 · 净值 1.1210').props.onClick()
     expect(page.state.selectedDate).toBe('2025-11-10')
     expect(page.state.selectedDate).not.toBe('2025-11-11')
     expect(page.state.chartDateChoices).toEqual([])
 
-    buttonByText(tree, '添加买入点').props.onClick()
-    buttonByText(tree, '添加卖出点').props.onClick()
+    page.addSignal('buy')
+    page.addSignal('sell')
     expect(page.state.signals.map((signal: any) => [signal.date, signal.type])).toEqual([
       ['2025-11-10', 'buy'],
       ['2025-11-10', 'sell']
@@ -198,7 +199,7 @@ describe('manual chart date selection', () => {
     })
 
     const selectedMarker = tree.root.findAllByType('circle').filter(marker =>
-      marker.props['aria-label'] === '选择净值日期 2025-11-10，单位净值 1.1210'
+      marker.props['aria-label'] === '选择真实净值日期 2025-11-10，单位净值 1.1210'
     )[0]
     const selectedRing = tree.root.findAllByType('circle').filter(marker =>
       marker.props.cx === selectedMarker.props.cx && marker.props.cy === selectedMarker.props.cy
@@ -243,16 +244,121 @@ describe('manual chart date selection', () => {
 
     expect(page.state.selectedDate).toBe('2025-11-10')
     expect(page.state.chartDateChoices).toEqual(expect.arrayContaining(['2025-11-10', '2025-11-11']))
-    expect(buttonByText(tree, '添加买入点').props.disabled).toBe(true)
-    expect(buttonByText(tree, '添加卖出点').props.disabled).toBe(true)
+    expect(buttonByText(tree, '买入信号模式')).toBeTruthy()
+    expect(buttonByText(tree, '卖出信号模式')).toBeTruthy()
     expect(page.state.signals).toEqual([])
 
     buttonByText(tree, '2025-11-11 · 净值 1.1210').props.onClick()
     expect(page.state.selectedDate).toBe('2025-11-11')
     expect(page.state.chartDateChoices).toEqual([])
-    expect(buttonByText(tree, '添加买入点').props.disabled).toBe(false)
-    buttonByText(tree, '添加买入点').props.onClick()
+    expect(buttonByText(tree, '买入信号模式')).toBeTruthy()
+    page.addSignal('buy')
     expect(page.state.signals.map((signal: any) => [signal.date, signal.type])).toEqual([['2025-11-11', 'buy']])
+
+    tree.unmount()
+  })
+})
+
+
+describe('manual point-mode chart workflow', () => {
+  it('requires a signal mode, snaps only to an as-of NAV, shows hover/crosshair values, reveals fill dates later, and keeps chart/list edits linked', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const quotes: ManualQuote[] = [
+      { date: '2024-01-01', val: 1.00 },
+      { date: '2024-01-04', val: 1.04 },
+      { date: '2024-01-08', val: 1.08 },
+      { date: '2024-01-12', val: 1.12 }
+    ]
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-01', endDate: '2024-01-12' },
+      historyQuotes: quotes,
+      quotes: quotes.slice(0, 2),
+      asOfDate: '2024-01-07',
+      signals: [],
+      selectedDate: '2024-01-04',
+      nextSignalId: 1
+    })
+
+    const chart = tree.root.findAllByType('svg').filter(svg => svg.props['aria-label'])[0]
+    const chartSvg = {
+      getScreenCTM: () => ({
+        a: 1,
+        b: 0,
+        c: 0,
+        d: 1,
+        inverse: () => ({ scale: 1, translateX: 0, translateY: 0 })
+      }),
+      createSVGPoint: () => {
+        const pointer: any = { x: 0, y: 0 }
+        pointer.matrixTransform = (matrix: any) => ({
+          x: pointer.x * matrix.scale + matrix.translateX,
+          y: pointer.y * matrix.scale + matrix.translateY
+        })
+        return pointer
+      }
+    }
+    const quotePoint = () => tree.root.findAllByType('circle').filter(circle =>
+      typeof circle.props['aria-label'] === 'string'
+        && circle.props['aria-label'].includes('2024-01-04')
+        && circle.props['aria-label'].includes('1.0400')
+    )[0]
+    const clickEvent = () => ({
+      nativeEvent: { detail: 1 },
+      currentTarget: chartSvg,
+      clientX: quotePoint().props.cx,
+      clientY: quotePoint().props.cy
+    })
+    const visibleQuoteDates = () => tree.root.findAllByType('circle')
+      .filter(circle => typeof circle.props['aria-label'] === 'string'
+        && circle.props['aria-label'].includes('真实净值日'))
+      .map(circle => circle.props['aria-label'].match(/\d{4}-\d{2}-\d{2}/)![0])
+
+    expect(visibleQuoteDates()).toEqual(['2024-01-01', '2024-01-04'])
+    chart.props.onMouseMove({ currentTarget: chartSvg, clientX: quotePoint().props.cx, clientY: quotePoint().props.cy })
+    expect(renderedText(tree.root)).toContain('2024-01-04 · 单位净值 1.0400')
+    expect(tree.root.findAllByType('g').some(group =>
+      group.props.role === 'status' && String(group.props['aria-label']).includes('2024-01-04')
+    )).toBe(true)
+
+    chart.props.onClick(clickEvent())
+    expect(page.state.signals).toEqual([])
+    buttonByText(tree, '买入信号模式').props.onClick()
+    chart.props.onClick(clickEvent())
+    expect(page.state.signals.map((signal: any) => [signal.date, signal.type])).toEqual([['2024-01-04', 'buy']])
+    expect(renderedText(tree.root)).toContain('待后续 as-of 揭示；不推断未来日期')
+    expect(JSON.stringify(tree.toJSON())).not.toContain('2024-01-08')
+
+    buttonByText(tree, '下一周').props.onClick()
+    expect(page.state.asOfDate).toBe('2024-01-12')
+    expect(visibleQuoteDates()).toEqual(quotes.map(quote => quote.date))
+    expect(renderedText(tree.root)).toContain('下一有效 NAV 成交日')
+    expect(renderedText(tree.root)).toContain('2024-01-08')
+    expect(page.state.signals[0].date).toBe('2024-01-04')
+
+    page.setState({ selectedSignalId: null, selectedDate: '2024-01-01' })
+    const signalRow = tree.root.findAllByType('tr').filter(row => renderedText(row).includes('2024-01-04'))[0]
+    signalRow.props.onClick()
+    expect(page.state.selectedSignalId).toBe(1)
+    expect(page.state.selectedDate).toBe('2024-01-04')
+    expect(tree.root.findAllByType('tr').some(row => row.props['aria-selected'] === true)).toBe(true)
+    expect(tree.root.findAllByType('g').some(group =>
+      group.props.role === 'button' && group.props['aria-pressed'] === true
+    )).toBe(true)
+
+    page.setState({ selectedSignalId: null })
+    const signalMarker = tree.root.findAllByType('g').filter(group =>
+      group.props.role === 'button' && String(group.props['aria-label']).includes('2024-01-04 买入信号日')
+    )[0]
+    expect(signalMarker).toBeTruthy()
+    signalMarker.props.onClick({ stopPropagation: jest.fn() })
+    expect(page.state.selectedSignalId).toBe(1)
+    expect(tree.root.findAllByType('tr').some(row => row.props['aria-selected'] === true)).toBe(true)
+
+    buttonByText(tree, '移除').props.onClick({ stopPropagation: jest.fn() })
+    expect(page.state.signals).toEqual([])
+    buttonByText(tree, '撤销最近一次点位操作').props.onClick()
+    expect(page.state.signals.map((signal: any) => signal.date)).toEqual(['2024-01-04'])
 
     tree.unmount()
   })
@@ -280,7 +386,7 @@ describe('manual sequence validation feedback', () => {
     expect(renderedText(tree.root)).toContain('买卖信号序列校验通过')
     expect(renderedText(tree.root)).toContain('有效序列可进入独立的历史模拟引擎')
 
-    buttonByText(tree, '添加卖出点').props.onClick()
+    page.addSignal('sell')
     expect(renderedText(tree.root)).toContain('空仓')
     expect(JSON.stringify(tree.toJSON())).toContain('不能在没有对应买入持仓时卖出')
     expect(invalidChartPoints(tree)).toHaveLength(1)
@@ -311,8 +417,8 @@ describe('manual sequence validation feedback', () => {
       undo: null
     })
 
-    buttonByText(tree, '添加买入点').props.onClick()
-    buttonByText(tree, '添加卖出点').props.onClick()
+    page.addSignal('buy')
+    page.addSignal('sell')
 
     const text = renderedText(tree.root)
     expect(text).toContain('需要处理的序列问题')
@@ -350,7 +456,7 @@ describe('manual sequence validation feedback', () => {
     expect(text).toContain('期末未平仓（尚未估值）')
     expect(page.getSequenceValidation().standardizedSequence.endingPositionStatus).toBe('open')
     expect(tree.root.findAllByType('g').some(group =>
-      group.props.role === 'img' && String(group.props['aria-label']).includes('期末未平仓且尚未估值')
+      group.props.role === 'button' && String(group.props['aria-label']).includes('期末未平仓且尚未估值')
     )).toBe(true)
 
     tree.unmount()
@@ -708,7 +814,7 @@ describe('manual as-of replay page', () => {
 
     const visibleQuoteDates = () => tree.root.findAllByType('circle')
       .filter(circle => typeof circle.props['aria-label'] === 'string'
-        && circle.props['aria-label'].startsWith('选择净值日期 '))
+        && circle.props['aria-label'].includes('真实净值日'))
       .map(circle => circle.props['aria-label'].match(/\d{4}-\d{2}-\d{2}/)![0])
     expect(page.getCurrentAsOfSnapshot().asOfDate).toBe('2024-01-07')
     expect(visibleQuoteDates()).toEqual(['2024-01-01', '2024-01-04'])

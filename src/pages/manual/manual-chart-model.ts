@@ -14,9 +14,9 @@ export const MANUAL_CHART_LAYOUT = {
   plotBottom: 258
 }
 
-// A 5-unit base radius intentionally detects overlapping neighboring targets.
-// Candidate radii also include visible vector-effect strokes, converted from screen pixels.
-export const MANUAL_CHART_HIT_RADIUS = 5
+// Keep real NAV hit targets comfortably clickable at any rendered SVG scale.
+// Candidate radii also include visible vector-effect strokes and selected rings.
+export const MANUAL_CHART_HIT_RADIUS_SCREEN_PIXELS = 12
 export const MANUAL_CHART_POINT_RADIUS = 3.5
 export const MANUAL_CHART_POINT_STROKE_WIDTH = 1.5
 export const MANUAL_CHART_FOCUSED_POINT_STROKE_WIDTH = 2.5
@@ -68,7 +68,7 @@ export const getManualChartHitCandidates = (
       index,
       distanceSquared: (point.x - x) * (point.x - x) + (point.y - y) * (point.y - y),
       hitRadius: Math.max(
-        MANUAL_CHART_HIT_RADIUS,
+        MANUAL_CHART_HIT_RADIUS_SCREEN_PIXELS * safeViewBoxUnitsPerScreenPixel,
         MANUAL_CHART_POINT_RADIUS + MANUAL_CHART_FOCUSED_POINT_STROKE_WIDTH / 2 * safeViewBoxUnitsPerScreenPixel,
         point.date === selectedDate
           ? Math.max(
