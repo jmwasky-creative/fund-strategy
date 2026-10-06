@@ -425,6 +425,78 @@ describe('manual sequence validation feedback', () => {
     tree.unmount()
   })
 
+  it('renders successful metrics and separate signal/fill dates, links the ledger row to the chart, and hides old metrics on failure', async () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    jest.useFakeTimers()
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-02', endDate: '2024-01-05' },
+      quotes: [
+        { date: '2024-01-02', val: 1.0 },
+        { date: '2024-01-03', val: 1.1 },
+        { date: '2024-01-04', val: 1.2 },
+        { date: '2024-01-05', val: 1.3 }
+      ],
+      signals: [
+        { id: 1, date: '2024-01-02', type: 'buy' },
+        { id: 2, date: '2024-01-04', type: 'sell' }
+      ],
+      replayConfig: {
+        initialCash: '1000',
+        buyAmount: '500',
+        buyFeeRatePercent: '0.2',
+        sellFeeRatePercent: '0.2',
+        buySlippageRatePercent: '0.1',
+        sellSlippageRatePercent: '0.2'
+      }
+    })
+
+    buttonByText(tree, '运行模拟回测').props.onClick()
+    await flushReplayTimers()
+
+    expect(page.state.replayStatus).toBe('success')
+    const successText = renderedText(tree.root)
+    expect(successText).toContain('总收益率')
+    expect(successText).toContain('最大回撤')
+    expect(successText).toContain('胜率（已平仓）')
+    expect(successText).toContain('已完成往返交易')
+    expect(successText).toContain('扣除费用并按滑点成交后 realizedProfit')
+    expect(successText).toContain('买入：2024-01-02 → 2024-01-03')
+    expect(successText).toContain('卖出：2024-01-04 → 2024-01-05')
+    expect(tree.root.findAllByType('g').filter(group =>
+      group.props.role === 'button' && String(group.props['aria-label']).startsWith('交易 1 ')
+    )).toHaveLength(4)
+
+    const tradeRow = tree.root.findAllByType('tr').filter(row =>
+      renderedText(row).includes('买入：2024-01-02 → 2024-01-03')
+    )[0]
+    tradeRow.props.onClick()
+    expect(page.state.selectedReplayTradeIndex).toBe(0)
+    expect(page.state.selectedDate).toBe('2024-01-02')
+    expect(tree.root.findAllByType('tr').some(row =>
+      renderedText(row).includes('买入：2024-01-02 → 2024-01-03') && row.props['aria-selected'] === true
+    )).toBe(true)
+
+    const buyExecutionMarker = tree.root.findAllByType('g').filter(group =>
+      group.props.role === 'button' && group.props['aria-label'] === '交易 1 买入成交日 2024-01-03；选择以定位交易明细'
+    )[0]
+    buyExecutionMarker.props.onClick({ stopPropagation: jest.fn() })
+    expect(page.state.selectedReplayTradeIndex).toBe(0)
+    expect(page.state.selectedDate).toBe('2024-01-03')
+
+    page.executeReplay = jest.fn(() => Promise.reject(new Error('重跑失败')))
+    buttonByText(tree, '重新运行模拟回测').props.onClick()
+    await flushReplayTimers()
+    expect(page.state.replayStatus).toBe('failure')
+    expect(renderedText(tree.root)).toContain('此处保留的是先前成功结果')
+    expect(renderedText(tree.root)).not.toContain('最大回撤')
+    expect(tree.root.findAllByType('g').filter(group =>
+      group.props.role === 'button' && String(group.props['aria-label']).startsWith('交易 1 ')
+    )).toHaveLength(0)
+
+    tree.unmount()
+  })
+
   it('cancels without partial results and ignores a late completion', async () => {
     const tree = renderer.create(<ManualBacktestPage />)
     const page = tree.getInstance() as any
@@ -530,14 +602,14 @@ describe('manual sequence validation feedback', () => {
     page.addSignal('sell')
     expect(page.state.signals).toHaveLength(2)
     expect(page.state.replayResult).toBe(priorResult)
-    expect(renderedText(tree.root)).toContain('此结果基于先前输入，已过期')
+    expect(renderedText(tree.root)).toContain('此处保留的是先前成功结果')
 
     page.handleReplayConfigChange('buyAmount')({ currentTarget: { value: '600' } })
     expect(page.state.replayResult).toBe(priorResult)
     expect(page.state.replayConfig.buyAmount).toBe('600')
     expect(page.state.replayStatus).toBe('idle')
-    expect(renderedText(tree.root)).toContain('此结果基于先前输入，已过期')
-    expect(renderedText(tree.root)).toContain('不可作为当前点位或参数的结果')
+    expect(renderedText(tree.root)).toContain('此处保留的是先前成功结果')
+    expect(renderedText(tree.root)).toContain('不能作为当前指标')
 
     page.handleDateChange('draftEndDate')({ currentTarget: { value: '2024-01-04' } })
     expect(renderedText(tree.root)).toContain('有修改尚未加载')

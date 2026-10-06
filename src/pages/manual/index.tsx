@@ -28,6 +28,12 @@ import {
   runManualReplayCooperatively
 } from './manual-replay-model'
 import {
+  calculateManualReplayMetrics,
+  getManualReplayChartMarkers,
+  getManualReplayHoldingIntervals,
+  getManualReplayTradeMovements
+} from './manual-results-model'
+import {
   getManualChartHitCandidates,
   MANUAL_CHART_LAYOUT,
   MANUAL_CHART_POINT_RADIUS,
@@ -103,6 +109,7 @@ interface ManualWorkspaceState {
   replayProgress: { processedDates: number, totalDates: number } | null
   replayInputRevision: number
   replayResultRevision: number | null
+  selectedReplayTradeIndex: number | null
 }
 
 const errorMessage = (error: any): string => error && typeof error.message === 'string'
@@ -154,7 +161,8 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     replayStatusMessage: '待运行；请确认基金、区间、信号和所有显式参数。',
     replayProgress: null,
     replayInputRevision: 0,
-    replayResultRevision: null
+    replayResultRevision: null,
+    selectedReplayTradeIndex: null
   }
 
   componentWillUnmount() {
@@ -195,7 +203,8 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
             ? '输入已变化；上一次结果已过期，不可作为当前结果，请重新运行。'
             : '输入已更新；请在确认后运行回测。',
         replayProgress: null,
-        replayError: ''
+        replayError: '',
+        selectedReplayTradeIndex: null
       }
     })
   }
@@ -469,6 +478,33 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     this.setState({ selectedSignalId: signal.id, selectedDate: signal.date, chartDateChoices: [] })
   }
 
+  private getCurrentReplayResult = (): ManualReplayResult | null => this.state.replayResult
+    && this.state.replayStatus === 'success'
+    && this.state.replayResultRevision === this.state.replayInputRevision
+    ? this.state.replayResult
+    : null
+
+  private selectReplayTrade = (tradeIndex: number, date?: string) => {
+    const result = this.getCurrentReplayResult()
+    if (!result || !result.trades[tradeIndex]) {
+      return
+    }
+    this.setState({
+      selectedReplayTradeIndex: tradeIndex,
+      selectedDate: date || result.trades[tradeIndex].entrySignalDate,
+      selectedSignalId: null,
+      chartDateChoices: []
+    })
+  }
+
+  private handleReplayMarkerKeyDown = (tradeIndex: number, date: string, event: KeyboardEvent<SVGGElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      event.stopPropagation()
+      this.selectReplayTrade(tradeIndex, date)
+    }
+  }
+
   private undoLastEdit = () => {
     const snapshot = this.state.undo
     if (!snapshot) {
@@ -555,7 +591,8 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       replayStatus: 'running',
       replayStatusMessage: '正在按已确认的基金、区间、信号和参数运行；可取消本次运行。',
       replayProgress: { processedDates: 0, totalDates: quotes.length },
-      replayError: ''
+      replayError: '',
+      selectedReplayTradeIndex: null
     })
     // Yield a paint opportunity so the busy state and cancel control are visible before local calculation starts.
     this.replayStartTimer = setTimeout(() => {
@@ -633,11 +670,18 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
   }
 
   private renderHistoryChart = () => {
-    const { quotes, signals, selectedDate, selectedSignalId } = this.state
+    const { quotes, signals, selectedDate, selectedSignalId, selectedReplayTradeIndex } = this.state
     const plotted = plotManualHistory(quotes)
     if (plotted.length === 0) {
       return null
     }
+    const replayResult = this.getCurrentReplayResult()
+    const replayMarkers = replayResult ? getManualReplayChartMarkers(replayResult.trades) : []
+    const holdingIntervals = replayResult ? getManualReplayHoldingIntervals(replayResult) : []
+    const replayMarkersByDate: Record<string, typeof replayMarkers> = {}
+    replayMarkers.forEach(marker => {
+      replayMarkersByDate[marker.date] = (replayMarkersByDate[marker.date] || []).concat(marker)
+    })
     const pointsAttribute = plotted.map(point => `${point.x},${point.y}`).join(' ')
     const minVal = Math.min.apply(null, quotes.map(item => item.val))
     const maxVal = Math.max.apply(null, quotes.map(item => item.val))
@@ -660,6 +704,26 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         <rect x="0" y="0" width={CHART_WIDTH} height={CHART_HEIGHT} fill="transparent" pointerEvents="all" aria-hidden="true" />
         <line x1={PLOT_LEFT} y1={PLOT_BOTTOM} x2={PLOT_RIGHT} y2={PLOT_BOTTOM} className={styles.axis} />
         <line x1={PLOT_LEFT} y1={PLOT_TOP} x2={PLOT_LEFT} y2={PLOT_BOTTOM} className={styles.axis} />
+        {holdingIntervals.map(interval => {
+          const startPoint = plotted.filter(point => point.date === interval.startDate)[0]
+          const endPoint = plotted.filter(point => point.date === interval.endDate)[0]
+          if (!startPoint || !endPoint) {
+            return null
+          }
+          const left = Math.min(startPoint.x, endPoint.x)
+          const width = Math.max(2, Math.abs(endPoint.x - startPoint.x))
+          const isSelected = selectedReplayTradeIndex === interval.tradeIndex
+          return <rect
+            key={`holding-${interval.tradeIndex}`}
+            x={left}
+            y={PLOT_TOP}
+            width={width}
+            height={PLOT_BOTTOM - PLOT_TOP}
+            className={isSelected ? `${styles.holdingInterval} ${styles.selectedHoldingInterval}` : styles.holdingInterval}
+            aria-label={`${interval.isOpen ? '未平仓' : '已平仓'}持仓区间 ${interval.startDate} 至 ${interval.endDate}`}
+            pointerEvents="none"
+          />
+        })}
         <text x={PLOT_LEFT} y={20} className={styles.axisLabel}>{maxVal.toFixed(4)}</text>
         <text x={PLOT_LEFT} y={PLOT_BOTTOM - 5} className={styles.axisLabel}>{minVal.toFixed(4)}</text>
         {plotted.length > 1
@@ -668,6 +732,9 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         {plotted.map(point => {
           const isSelected = selectedDate === point.date
           const dateSignals = signalsByDate[point.date] || []
+          const dateReplayMarkers = replayMarkersByDate[point.date] || []
+          const isSelectedReplayPoint = selectedReplayTradeIndex !== null
+            && dateReplayMarkers.some(marker => marker.tradeIndex === selectedReplayTradeIndex)
           return <g key={point.date}>
             {dateSignals.map((signal, index) => {
               const offset = (index - (dateSignals.length - 1) / 2) * 15
@@ -697,12 +764,52 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
                 </text>
               </g>
             })}
-            {isSelected ? <circle
+            {dateReplayMarkers.map((marker, markerIndex) => {
+              const isSignal = marker.kind.indexOf('signal') >= 0
+              const isBuy = marker.side === 'buy'
+              const isTradeSelected = selectedReplayTradeIndex === marker.tradeIndex
+              const markerX = point.x + (markerIndex - (dateReplayMarkers.length - 1) / 2) * 9
+              const markerY = Math.max(PLOT_TOP + 12, Math.min(PLOT_BOTTOM - 12, point.y + (isSignal ? -22 : 22)))
+              const markerLabel = marker.kind === 'entry-signal' ? '买入信号'
+                : marker.kind === 'entry-execution' ? '买入成交'
+                  : marker.kind === 'exit-signal' ? '卖出信号' : '卖出成交'
+              const markerClass = [
+                styles.replayTradeMarker,
+                isBuy ? styles.replayBuyMarker : styles.replaySellMarker,
+                isSignal ? styles.replaySignalMarker : styles.replayExecutionMarker,
+                isTradeSelected ? styles.replayTradeMarkerSelected : ''
+              ].filter(Boolean).join(' ')
+              return <g
+                key={`${marker.kind}-${marker.tradeIndex}`}
+                role="button"
+                tabIndex={0}
+                aria-pressed={isTradeSelected}
+                aria-label={`交易 ${marker.tradeIndex + 1} ${markerLabel}日 ${marker.date}；选择以定位交易明细`}
+                onClick={event => {
+                  event.stopPropagation()
+                  this.selectReplayTrade(marker.tradeIndex, marker.date)
+                }}
+                onKeyDown={event => this.handleReplayMarkerKeyDown(marker.tradeIndex, marker.date, event)}
+              >
+                <line x1={point.x} y1={point.y} x2={markerX} y2={markerY} className={styles.replayMarkerConnector} />
+                {isSignal && isBuy
+                  ? <circle cx={markerX} cy={markerY} r={6} className={markerClass} />
+                  : isSignal
+                    ? <rect x={markerX - 5.5} y={markerY - 5.5} width={11} height={11} className={markerClass} />
+                    : isBuy
+                      ? <path d={`M ${markerX} ${markerY - 7} L ${markerX + 6} ${markerY + 5} L ${markerX - 6} ${markerY + 5} Z`} className={markerClass} />
+                      : <path d={`M ${markerX} ${markerY - 7} L ${markerX + 7} ${markerY} L ${markerX} ${markerY + 7} L ${markerX - 7} ${markerY} Z`} className={markerClass} />}
+                <text x={markerX} y={markerY + (isSignal ? -9 : 15)} textAnchor="middle" className={styles.replayMarkerText}>
+                  {markerLabel}
+                </text>
+              </g>
+            })}
+            {isSelected || isSelectedReplayPoint ? <circle
               cx={point.x}
               cy={point.y}
-              r={MANUAL_CHART_SELECTED_RING_RADIUS}
+              r={isSelectedReplayPoint ? MANUAL_CHART_SELECTED_RING_RADIUS + 3 : MANUAL_CHART_SELECTED_RING_RADIUS}
               strokeWidth={MANUAL_CHART_SELECTED_RING_STROKE_WIDTH}
-              className={styles.selectedRing}
+              className={isSelectedReplayPoint ? styles.replaySelectedRing : styles.selectedRing}
             /> : null}
             <circle
               cx={point.x}
@@ -723,6 +830,8 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       <div className={styles.chartLegend}>
         <span><i className={styles.buyLegend} />买入点</span>
         <span><i className={styles.sellLegend} />卖出点</span>
+        <span><i className={styles.holdingIntervalLegend} />实际持仓区间（买入成交至卖出成交/期末）</span>
+        <span>空心圆/方块为买/卖信号日；实心三角/菱形为买/卖成交日。</span>
         <span>图上重叠点会先显示候选日期；也可用下方选项精确选择实际净值交易日。</span>
         <span>红色描边点位存在校验问题或待确认规则；详情见清单。</span>
       </div>
@@ -746,6 +855,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       selectedDate,
       chartDateChoices,
       selectedSignalId,
+      selectedReplayTradeIndex,
       undo,
       pendingSelection,
       loading,
@@ -772,7 +882,12 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       : openTradeCount > 0
         ? `信号序列合法；${openTradeCount} 笔持仓仍未平仓。这里只输出未平仓状态，不计算或声称期末估值；估值由独立回测引擎范围处理。`
         : '当前点位符合多头单持仓顺序约束。'
-    const replayResultIsStale = Boolean(replayResult && replayResultRevision !== replayInputRevision)
+    const replayResultIsStale = Boolean(replayResult && (
+      replayResultRevision !== replayInputRevision || replayStatus !== 'success'
+    ))
+    const replayMetrics = replayResult && !replayResultIsStale
+      ? calculateManualReplayMetrics(replayResult)
+      : null
     const replayStatusLabel: Record<ManualReplayStatus, string> = {
       idle: '待运行',
       running: '运行中',
@@ -1014,64 +1129,104 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         {replayError ? <Alert className={styles.feedback} type="error" showIcon message="无法完成手动回放" description={replayError} /> : null}
       </Card> : null}
 
-      {replayResult ? <Card title={replayResultIsStale ? '逐日模拟结果（已过期）' : '逐日模拟结果'} className={styles.replayCard}>
-        {replayResultIsStale ? <Alert
-          className={styles.feedback}
-          type="warning"
-          showIcon
-          message="此结果基于先前输入，已过期，不可作为当前点位或参数的结果。"
-          description="点位、基金/日期范围或回测参数已变化；用户输入仍保留，请重新运行后再使用结果。"
-        /> : null}
-        <Alert type="warning" showIcon message="仅历史模拟，不会向真实账户下单" description={replayResult.summary.endingPositionStatus === 'open'
-          ? `期末持仓仍为 open/unclosed，按 ${replayResult.summary.lastNavDate} 最后有效净值估值；不合成卖出，也不计入已完成交易。`
-          : '所有成交按显式参数回放；本结果不代表实盘成交或真实收益。'} />
-        <dl className={styles.replaySummary}>
-          <div><dt>期末总资产</dt><dd>{replayResult.summary.endingTotalAssets.toFixed(2)} 元</dd></div>
-          <div><dt>现金余额</dt><dd>{replayResult.summary.endingCash.toFixed(2)} 元</dd></div>
-          <div><dt>累计红利复投</dt><dd>{replayResult.summary.totalDividendReinvested.toFixed(2)} 元（已同步计入份额）</dd></div>
-          <div><dt>期末持仓估值</dt><dd>{replayResult.summary.openPositionValue.toFixed(2)} 元</dd></div>
-          <div><dt>持仓状态</dt><dd>{replayResult.summary.endingPositionStatus === 'open' ? 'open / 未平仓' : 'flat / 空仓'}</dd></div>
-          <div><dt>已完成交易</dt><dd>{replayResult.summary.completedTradeCount} 笔</dd></div>
-          <div><dt>未平仓交易</dt><dd>{replayResult.summary.openTradeCount} 笔（不计入已完成）</dd></div>
-          <div><dt>已实现收益</dt><dd>{replayResult.summary.realizedProfit.toFixed(2)} 元</dd></div>
-          <div><dt>未实现估值变动</dt><dd>{replayResult.summary.unrealizedProfit.toFixed(2)} 元</dd></div>
-          <div><dt>总资产变动（含未平仓估值）</dt><dd>{replayResult.summary.totalProfit.toFixed(2)} 元 · {replayResult.summary.totalReturnRatePercent.toFixed(2)}%</dd></div>
-          <div><dt>最后有效净值</dt><dd>{replayResult.summary.lastNavDate} · {replayResult.summary.lastNav.toFixed(4)}</dd></div>
-        </dl>
+      {replayResult ? <Card title={replayResultIsStale ? '逐日模拟结果（已过期 / 非当前运行）' : '逐日模拟结果'} className={styles.replayCard}>
+        {replayResultIsStale
+          ? <Alert
+            className={styles.feedback}
+            type="warning"
+            showIcon
+            message="此处保留的是先前成功结果；输入已变化或当前运行尚未成功，不能作为当前指标。"
+            description="旧指标、图表叠加和可定位交易明细均已隐藏；请在当前输入运行成功后查看新结果。失败或取消不会展示貌似有效的指标。"
+          />
+          : replayMetrics ? <>
+            <Alert type="warning" showIcon message="仅历史模拟，不会向真实账户下单" description={replayResult.summary.endingPositionStatus === 'open'
+              ? `期末持仓仍为 open/unclosed，按 ${replayResult.summary.lastNavDate} 最后有效净值估值；不合成卖出，也不计入已完成交易。`
+              : '所有成交按显式参数回放；本结果不代表实盘成交或真实收益。'} />
+            <h3>回测结果指标</h3>
+            <dl className={styles.replaySummary}>
+              <div><dt>总收益率</dt><dd>{replayMetrics.totalReturnRatePercent.toFixed(2)}%</dd></div>
+              <div><dt>总资产变动</dt><dd>{replayMetrics.totalProfitAmount.toFixed(2)} 元</dd></div>
+              <div><dt>最大回撤</dt><dd>{replayMetrics.maximumDrawdownPercent.toFixed(2)}%</dd></div>
+              <div><dt>胜率（已平仓）</dt><dd>{replayMetrics.winRatePercent === null ? '—（暂无已完成交易）' : `${replayMetrics.winRatePercent.toFixed(2)}%`}</dd></div>
+              <div><dt>已完成往返交易</dt><dd>{replayMetrics.completedTradeCount} 笔</dd></div>
+              <div><dt>期末未平仓</dt><dd>{replayMetrics.openTradeCount} 笔（另行标注，不计入胜率/交易数）</dd></div>
+            </dl>
+            <p className={styles.metricsNotice}>
+              口径：总收益率 =（期末总资产 − 配置初始资金）÷ 配置初始资金；最大回撤 = 从初始资金起的逐日总资产曲线相对历史高点的最大跌幅；胜率 = 已平仓交易中扣除费用并按滑点成交后 realizedProfit &gt; 0 的笔数 ÷ 已平仓笔数；交易数仅计已完成往返交易，未平仓另列。无已平仓交易时胜率记为“暂无”，不强行记 0%。
+            </p>
+            <dl className={styles.replaySummary}>
+              <div><dt>期末总资产</dt><dd>{replayResult.summary.endingTotalAssets.toFixed(2)} 元</dd></div>
+              <div><dt>现金余额</dt><dd>{replayResult.summary.endingCash.toFixed(2)} 元</dd></div>
+              <div><dt>累计红利复投</dt><dd>{replayResult.summary.totalDividendReinvested.toFixed(2)} 元（已同步计入份额）</dd></div>
+              <div><dt>期末持仓估值</dt><dd>{replayResult.summary.openPositionValue.toFixed(2)} 元</dd></div>
+              <div><dt>持仓状态</dt><dd>{replayResult.summary.endingPositionStatus === 'open' ? 'open / 未平仓' : 'flat / 空仓'}</dd></div>
+              <div><dt>已实现收益</dt><dd>{replayResult.summary.realizedProfit.toFixed(2)} 元</dd></div>
+              <div><dt>未实现估值变动</dt><dd>{replayResult.summary.unrealizedProfit.toFixed(2)} 元</dd></div>
+              <div><dt>最后有效净值</dt><dd>{replayResult.summary.lastNavDate} · {replayResult.summary.lastNav.toFixed(4)}</dd></div>
+            </dl>
 
-        <h3>交易账本（信号日与成交日分列）</h3>
-        {replayResult.trades.length === 0
-          ? <p className={styles.emptyList}>没有交易信号；结果仅显示区间现金快照。</p>
-          : <div className={styles.tableWrap}>
-            <table className={styles.replayTable}>
-              <thead><tr><th>状态</th><th>买入信号日 → 成交日</th><th>买入净值 / 成交净值</th><th>卖出信号日 → 成交日</th><th>卖出净值 / 成交净值</th><th>份额</th><th>买入费</th><th>卖出费</th><th>已实现收益 / 期末估值</th></tr></thead>
-              <tbody>{replayResult.trades.map((trade, index) => <tr key={`${trade.entrySignalDate}-${index}`}>
-                <td>{trade.status === 'open' ? 'open / 未平仓' : 'closed / 已完成'}</td>
-                <td>{trade.entrySignalDate} → {trade.entryExecutionDate}</td>
-                <td>{trade.entryMarketNav.toFixed(4)} / {trade.entryFillNav.toFixed(4)}</td>
-                <td>{trade.exitSignalDate || '—'} → {trade.exitExecutionDate || '—'}</td>
-                <td>{trade.exitMarketNav === null ? '—' : `${trade.exitMarketNav.toFixed(4)} / ${trade.exitFillNav!.toFixed(4)}`}</td>
-                <td>{trade.shares.toFixed(6)}</td>
-                <td>{trade.entryFee.toFixed(2)}</td>
-                <td>{trade.exitFee === null ? '—' : trade.exitFee.toFixed(2)}</td>
-                <td>{trade.status === 'open' ? `期末估值 ${Number(trade.currentValue).toFixed(2)}` : `${Number(trade.realizedProfit).toFixed(2)} 元`}</td>
-              </tr>)}</tbody>
-            </table>
-          </div>}
+            <h3>交易账本（信号日与成交日分列；选择行可定位图表）</h3>
+            {replayResult.trades.length === 0
+              ? <p className={styles.emptyList}>没有交易信号；结果仅显示区间现金快照。</p>
+              : <div className={styles.tableWrap}>
+                <table className={styles.replayTable}>
+                  <thead><tr><th>状态</th><th>买入类型：信号日 → 成交日</th><th>买入净值：市场 / 成交</th><th>卖出类型：信号日 → 成交日</th><th>卖出净值：市场 / 成交</th><th>费用 / 滑点金额</th><th>现金 / 持仓变化</th><th>交易盈亏</th><th>图表</th></tr></thead>
+                  <tbody>{replayResult.trades.map((trade, index) => {
+                    const movements = getManualReplayTradeMovements(trade)
+                    return <tr
+                      key={`${trade.entrySignalDate}-${index}`}
+                      className={selectedReplayTradeIndex === index ? styles.selectedRow : ''}
+                      aria-selected={selectedReplayTradeIndex === index}
+                      onClick={() => this.selectReplayTrade(index)}
+                    >
+                      <td>{trade.status === 'open' ? 'open / 未平仓' : 'closed / 已完成'}</td>
+                      <td>买入：{trade.entrySignalDate} → {trade.entryExecutionDate}</td>
+                      <td>{trade.entryMarketNav.toFixed(4)} / {trade.entryFillNav.toFixed(4)}</td>
+                      <td>{trade.exitSignalDate
+                        ? `卖出：${trade.exitSignalDate} → ${trade.exitExecutionDate || '—'}`
+                        : '卖出：未平仓'}</td>
+                      <td>{trade.exitMarketNav === null ? '—' : `${trade.exitMarketNav.toFixed(4)} / ${trade.exitFillNav!.toFixed(4)}`}</td>
+                      <td>
+                        <div>买费 {trade.entryFee.toFixed(2)} 元；买滑点 {movements.entrySlippageAmount.toFixed(2)} 元（{movements.entrySlippageRatePercent.toFixed(2)}%）</div>
+                        <div>{trade.exitFee === null ? '卖费 / 卖滑点 —' : `卖费 ${trade.exitFee.toFixed(2)} 元；卖滑点 ${movements.exitSlippageAmount!.toFixed(2)} 元（${movements.exitSlippageRatePercent!.toFixed(2)}%）`}</div>
+                      </td>
+                      <td>
+                        <div>现金 Δ：{movements.entryCashChange.toFixed(2)} / {movements.exitCashChange === null ? '—' : movements.exitCashChange.toFixed(2)} 元</div>
+                        <div>持仓 Δ：+{movements.entryPositionChange.toFixed(6)} / {movements.exitPositionChange === null ? '—' : movements.exitPositionChange.toFixed(6)} 份</div>
+                      </td>
+                      <td>{trade.status === 'open'
+                        ? `未实现 ${((trade.currentValue || 0) - trade.entryNotional - trade.entryFee).toFixed(2)} 元（期末估值）`
+                        : `${Number(trade.realizedProfit).toFixed(2)} 元（已实现）`}</td>
+                      <td><Button
+                        size="small"
+                        type={selectedReplayTradeIndex === index ? 'primary' : undefined}
+                        aria-pressed={selectedReplayTradeIndex === index}
+                        onClick={event => {
+                          event.stopPropagation()
+                          this.selectReplayTrade(index)
+                        }}
+                      >定位图表</Button></td>
+                    </tr>
+                  })}</tbody>
+                </table>
+              </div>}
 
-        <h3>逐日资产快照</h3>
-        <div className={styles.tableWrap}>
-          <table className={styles.replayTable}>
-            <thead><tr><th>日期</th><th>净值</th><th>现金</th><th>当日红利复投</th><th>份额</th><th>持仓估值</th><th>总资产</th><th>持仓状态</th><th>已完成交易数</th></tr></thead>
-            <tbody>{replayResult.dailySnapshots.map(snapshot => <tr key={snapshot.date}>
-              <td>{snapshot.date}</td><td>{snapshot.nav.toFixed(4)}</td><td>{snapshot.cash.toFixed(2)}</td>
-              <td>{snapshot.dividendReinvestmentAmount.toFixed(2)}</td><td>{snapshot.shares.toFixed(6)}</td><td>{snapshot.positionValue.toFixed(2)}</td><td>{snapshot.totalAssets.toFixed(2)}</td>
-              <td>{snapshot.positionStatus === 'open' ? 'open / 未平仓' : 'flat / 空仓'}</td><td>{snapshot.completedTradeCount}</td>
-            </tr>)}</tbody>
-          </table>
-        </div>
-        <h3>数据口径与披露</h3>
-        <ul className={styles.disclosureList}>{replayResult.disclosures.map((disclosure, index) => <li key={index}>{disclosure}</li>)}</ul>
+            <p className={styles.metricsNotice}>滑点金额按市场净值与成交净值差额乘以该侧成交份额推导；现金流、费用、成交净值及 realizedProfit 均沿用 #4 回放账本字段。拆分/红利产生的持仓调整可在逐日快照及下方披露中核对。</p>
+            <h3>逐日资产快照</h3>
+            <div className={styles.tableWrap}>
+              <table className={styles.replayTable}>
+                <thead><tr><th>日期</th><th>净值</th><th>现金</th><th>当日红利复投</th><th>份额</th><th>持仓估值</th><th>总资产</th><th>持仓状态</th><th>已完成交易数</th></tr></thead>
+                <tbody>{replayResult.dailySnapshots.map(snapshot => <tr key={snapshot.date}>
+                  <td>{snapshot.date}</td><td>{snapshot.nav.toFixed(4)}</td><td>{snapshot.cash.toFixed(2)}</td>
+                  <td>{snapshot.dividendReinvestmentAmount.toFixed(2)}</td><td>{snapshot.shares.toFixed(6)}</td><td>{snapshot.positionValue.toFixed(2)}</td><td>{snapshot.totalAssets.toFixed(2)}</td>
+                  <td>{snapshot.positionStatus === 'open' ? 'open / 未平仓' : 'flat / 空仓'}</td><td>{snapshot.completedTradeCount}</td>
+                </tr>)}</tbody>
+              </table>
+            </div>
+            <h3>数据口径与披露</h3>
+            <ul className={styles.disclosureList}>{replayResult.disclosures.map((disclosure, index) => <li key={index}>{disclosure}</li>)}</ul>
+          </>
+          : null}
       </Card> : null}
 
       <Modal

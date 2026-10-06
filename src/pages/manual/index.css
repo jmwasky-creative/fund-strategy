@@ -485,3 +485,96 @@
     flex: 1 1 100%;
   }
 }
+
+
+.holdingInterval {
+  fill: #52c41a;
+  opacity: 0.07;
+}
+
+.selectedHoldingInterval {
+  fill: #fa8c16;
+  opacity: 0.2;
+}
+
+.holdingIntervalLegend {
+  display: inline-block;
+  width: 16px;
+  height: 9px;
+  border: 1px solid #52c41a;
+  background: rgba(82, 196, 26, 0.16);
+}
+
+.replayMarkerConnector {
+  stroke: #7b8794;
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.replayTradeMarker {
+  cursor: pointer;
+  vector-effect: non-scaling-stroke;
+}
+
+.replayBuyMarker {
+  fill: #237804;
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+
+.replaySellMarker {
+  fill: #cf1322;
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+
+.replaySignalMarker {
+  fill: #fff;
+  stroke-width: 2.5;
+}
+
+.replayExecutionMarker {
+  stroke-width: 1.5;
+}
+
+.replayTradeMarkerSelected {
+  stroke: #fa8c16;
+  stroke-width: 3.5;
+}
+
+.replayMarkerText {
+  fill: #343a40;
+  font-size: 9px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: #fff;
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.replaySelectedRing {
+  fill: none;
+  stroke: #fa8c16;
+  stroke-width: 3;
+  stroke-dasharray: 3 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.metricsNotice {
+  margin: 0 0 12px;
+  color: #697586;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.replayTable tbody tr[aria-selected='true'] {
+  background: #fff7e6;
+  outline: 1px solid #fa8c16;
+}
+
+.replayTable tbody tr[aria-selected='true'] td {
+  border-bottom-color: #fa8c16;
+}
