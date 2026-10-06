@@ -190,7 +190,7 @@
 
 .workspaceGrid {
   display: grid;
-  grid-template-columns: minmax(0, 1.75fr) minmax(300px, 1fr);
+  grid-template-columns: minmax(0, 2.15fr) minmax(280px, 0.95fr);
   gap: 16px;
   align-items: start;
   margin-top: 16px;
@@ -225,24 +225,31 @@
   line-height: 1.6;
 }
 
-.signalModeControls {
+.signalConfirm {
+  margin: 12px 0 14px;
+  padding: 14px;
+  border: 1px solid #d6e4ff;
+  border-radius: 6px;
+  background: #f5f8ff;
+}
+
+.signalConfirm > strong {
+  color: #172554;
+  font-size: 14px;
+}
+
+.signalConfirmHint {
+  margin: 6px 0 10px;
+  color: #596579;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.signalConfirmActions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 12px 0 4px;
-}
-
-.signalModeControls strong {
-  margin-right: 4px;
-  color: #172554;
-  font-size: 13px;
-}
-
-.signalModeHint {
-  margin: 4px 0 10px;
-  color: #697586;
-  font-size: 12px;
 }
 
 .chartWrap {
@@ -252,7 +259,7 @@
 .chart {
   display: block;
   width: 100%;
-  min-height: 240px;
+  min-height: 270px;
   overflow: visible;
   cursor: crosshair;
 }
@@ -281,6 +288,14 @@
   stroke-width: 1;
   stroke-dasharray: 4 3;
   opacity: 0.75;
+  vector-effect: non-scaling-stroke;
+}
+
+.selectedCrosshair {
+  stroke: #d48806;
+  stroke-width: 1.5;
+  stroke-dasharray: 5 3;
+  opacity: 0.95;
   vector-effect: non-scaling-stroke;
 }
 
@@ -569,6 +584,10 @@
 
   .signalActions > button {
     flex: 1 1 100%;
+  }
+  .signalConfirmActions > button {
+    flex: 1 1 100%;
+    min-height: 42px;
   }
 }
 
