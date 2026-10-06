@@ -34,6 +34,45 @@ describe('market-data adapters', () => {
     expect(result.bonus['2020-01-02']).toBe(result.all['2020-01-02'])
   })
 
+  it('preserves an explicit per-share cash dividend amount and its source description', async () => {
+    loadFundHistoryMock.mockResolvedValue([
+      { x: Date.UTC(2020, 0, 3), y: 0.9, unitMoney: '每份派现金0.1元' }
+    ])
+
+    const result = await getFundData('000001', 1)
+
+    expect(result.all['2020-01-03']).toMatchObject({
+      date: '2020-01-03', val: 0.9, bonus: 0.1, unitMoney: '每份派现金0.1元'
+    })
+    expect(result.all['2020-01-03'].isBonusPortion).toBeUndefined()
+  })
+
+  it('uses the provider China date and parses the actual Eastmoney dividend row independently of local timezone', async () => {
+    const originalTimezone = process.env.TZ
+    process.env.TZ = 'America/Los_Angeles'
+    try {
+      loadFundHistoryMock.mockResolvedValue([{
+        x: 1461081600000,
+        y: 1.001,
+        unitMoney: '分红：每份派现金0.05元'
+      }])
+
+      const result = await getFundData('001819', 1)
+
+      expect(result.all['2016-04-20']).toMatchObject({
+        date: '2016-04-20', val: 1.001, bonus: 0.05,
+        unitMoney: '分红：每份派现金0.05元'
+      })
+      expect(result.all['2016-04-19']).toBeUndefined()
+    } finally {
+      if (originalTimezone === undefined) {
+        delete process.env.TZ
+      } else {
+        process.env.TZ = originalTimezone
+      }
+    }
+  })
+
   it('rejects invalid fund codes and empty history rather than returning an empty backtest', async () => {
     await expect(getFundData('000001&callback=evil', 10)).rejects.toThrow('基金代码必须为 6 位数字')
     expect(loadFundHistoryMock).not.toHaveBeenCalled()

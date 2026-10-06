@@ -51,6 +51,40 @@ describe('manual backtest model', () => {
     expect(hasManualQuoteDate(quotes, '2024-01-03')).toBe(true)
   })
 
+  it('preserves provider split and distribution events for explicit replay treatment', () => {
+    const quotes = filterManualQuotes({
+      '2024-01-02': {
+        date: '2024-01-02', val: 0.5, bonus: 2,
+        isBonusPortion: true, unitMoney: '每份基金份额折算2份'
+      },
+      '2024-01-03': {
+        date: '2024-01-03', val: 0.49, bonus: 0.05,
+        unitMoney: '分红：每份派现金0.05元'
+      }
+    }, '2024-01-02', '2024-01-03')
+
+    expect(quotes[0].corporateActions).toEqual([{
+      date: '2024-01-02', kind: 'share-split', value: 2, valueUnit: 'share-multiplier', description: '每份基金份额折算2份'
+    }])
+    expect(quotes[1].corporateActions).toEqual([{
+      date: '2024-01-03', kind: 'distribution', value: 0.05, valueUnit: 'cash-per-share', description: '分红：每份派现金0.05元'
+    }])
+  })
+
+  it('keeps distributions with ambiguous units or missing descriptions explicitly uninterpreted', () => {
+    const quotes = filterManualQuotes({
+      '2024-01-02': { date: '2024-01-02', val: 0.99, bonus: 10, unitMoney: '每10份派现金1元' },
+      '2024-01-03': { date: '2024-01-03', val: 0.98, bonus: 0.1 }
+    }, '2024-01-02', '2024-01-03')
+
+    expect(quotes[0].corporateActions![0]).toMatchObject({
+      kind: 'distribution', value: null, valueUnit: 'unknown', description: '每10份派现金1元'
+    })
+    expect(quotes[1].corporateActions![0]).toMatchObject({
+      kind: 'unclassified', value: null, valueUnit: 'unknown', description: expect.stringContaining('缺少 unitMoney')
+    })
+  })
+
   it('sorts signals by date and preserves stable insertion order on the same day', () => {
     const signals: ManualSignal[] = [
       { id: 4, date: '2024-01-03', type: 'sell' },

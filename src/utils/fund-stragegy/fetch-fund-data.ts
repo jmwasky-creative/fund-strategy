@@ -3,6 +3,13 @@
 import { dateFormat, hasOnlyWeekendDates, isWeekendDate, roundToFix } from '../common'
 import { loadFundHistoryScript, MarketDataCoverageError, MarketDataError, requestIndexKlines, requestJSONP } from './market-api'
 
+const eastmoneyFundDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit'
+})
+
 /**
  * macd 买卖临界点
  */
@@ -24,6 +31,7 @@ export interface FundDataItem {
   // growthRate: number
   bonus: number
   isBonusPortion?: boolean // FHSP: "每份基金份额折算1.020420194份"
+  unitMoney?: string
 
 }
 
@@ -79,12 +87,20 @@ export const getFundData = async (fundCodeInput: string | number, size: number |
       throw new MarketDataError('基金净值', '历史净值响应格式无效')
     }
 
+    const timestampDate = new Date(timestamp)
+    if (!Number.isFinite(timestampDate.getTime())) {
+      throw new MarketDataError('基金净值', '历史净值日期格式无效')
+    }
+
     const unitMoney = typeof item.unitMoney === 'string' ? item.unitMoney : ''
     const matchResult = unitMoney.match(/\d+(?:\.\d+)?/)
     const curFundObj: FundDataItem = {
-      date: dateFormat(timestamp, 'yyyy-MM-dd'),
+      // Eastmoney's x represents the China/Shanghai calendar date; UTC and the
+      // user's local date can both be the previous day for this timestamp.
+      date: eastmoneyFundDateFormatter.format(timestampDate),
       val: value,
-      bonus: matchResult ? Number(matchResult[0]) : 0
+      bonus: matchResult ? Number(matchResult[0]) : 0,
+      unitMoney
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(curFundObj.date)) {
       throw new MarketDataError('基金净值', '历史净值日期格式无效')

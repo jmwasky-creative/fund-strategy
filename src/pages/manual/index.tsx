@@ -22,6 +22,11 @@ import {
   validateManualSignalSequence
 } from './manual-model'
 import {
+  ManualReplayConfig,
+  ManualReplayResult,
+  runManualReplay
+} from './manual-replay-model'
+import {
   getManualChartHitCandidates,
   MANUAL_CHART_LAYOUT,
   MANUAL_CHART_POINT_RADIUS,
@@ -60,6 +65,15 @@ interface PendingSelection {
   invalidSignals: ManualSignal[]
 }
 
+interface ManualReplayFormState {
+  initialCash: string
+  buyAmount: string
+  buyFeeRatePercent: string
+  sellFeeRatePercent: string
+  buySlippageRatePercent: string
+  sellSlippageRatePercent: string
+}
+
 interface ManualWorkspaceState {
   draftFundCode: string
   draftStartDate: string
@@ -78,6 +92,9 @@ interface ManualWorkspaceState {
   pendingSelection: PendingSelection | null
   loading: boolean
   error: string
+  replayConfig: ManualReplayFormState
+  replayResult: ManualReplayResult | null
+  replayError: string
 }
 
 const errorMessage = (error: any): string => error && typeof error.message === 'string'
@@ -105,7 +122,17 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     undo: null,
     pendingSelection: null,
     loading: false,
-    error: ''
+    error: '',
+    replayConfig: {
+      initialCash: '',
+      buyAmount: '',
+      buyFeeRatePercent: '',
+      sellFeeRatePercent: '',
+      buySlippageRatePercent: '',
+      sellSlippageRatePercent: ''
+    },
+    replayResult: null,
+    replayError: ''
   }
 
   componentWillUnmount() {
@@ -260,7 +287,9 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         pendingSelection: null,
         loading: false,
         error: '',
-        undo: null
+        undo: null,
+        replayResult: null,
+        replayError: ''
       }
     })
   }
@@ -354,7 +383,9 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         undo: {
           signals: previousState.signals.slice(),
           selectedSignalId: previousState.selectedSignalId
-        }
+        },
+        replayResult: null,
+        replayError: ''
       }
     })
   }
@@ -367,7 +398,9 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       undo: {
         signals: previousState.signals.slice(),
         selectedSignalId: previousState.selectedSignalId
-      }
+      },
+      replayResult: null,
+      replayError: ''
     }))
   }
 
@@ -383,8 +416,55 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     this.setState({
       signals: snapshot.signals,
       selectedSignalId: snapshot.selectedSignalId,
-      undo: null
+      undo: null,
+      replayResult: null,
+      replayError: ''
     })
+  }
+
+  private handleReplayConfigChange = (field: keyof ManualReplayFormState) => (event: React.ChangeEvent<HTMLInputElement>) => {
+    const value = event.currentTarget.value
+    this.setState(previousState => ({
+      replayConfig: { ...previousState.replayConfig, [field]: value },
+      replayResult: null,
+      replayError: ''
+    }))
+  }
+
+  private runReplay = () => {
+    const validation = this.getSequenceValidation()
+    const query = this.state.activeQuery
+    if (!query || this.state.quotes.length === 0) {
+      this.setState({ replayResult: null, replayError: '请先加载所选区间内的有效基金净值。' })
+      return
+    }
+    if (!validation.isValid || !validation.standardizedSequence) {
+      this.setState({ replayResult: null, replayError: '信号序列未通过 #3 校验；请先修正清单中的问题。' })
+      return
+    }
+    const input = this.state.replayConfig
+    const missing = Object.keys(input).filter(key => !input[key as keyof ManualReplayFormState].trim())
+    if (missing.length > 0) {
+      this.setState({ replayResult: null, replayError: '请显式填写初始资金、每笔买入金额、买入/卖出费率和买入/卖出滑点；系统不设置猜测值。' })
+      return
+    }
+    const config: ManualReplayConfig = {
+      initialCash: Number(input.initialCash),
+      buyAmount: Number(input.buyAmount),
+      buyFeeRatePercent: Number(input.buyFeeRatePercent),
+      sellFeeRatePercent: Number(input.sellFeeRatePercent),
+      buySlippageRatePercent: Number(input.buySlippageRatePercent),
+      sellSlippageRatePercent: Number(input.sellSlippageRatePercent)
+    }
+    try {
+      const replayResult = runManualReplay(validation, this.state.quotes, {
+        startDate: query.startDate,
+        endDate: query.endDate
+      }, config)
+      this.setState({ replayResult, replayError: '' })
+    } catch (error) {
+      this.setState({ replayResult: null, replayError: errorMessage(error) })
+    }
   }
 
   private renderHistoryChart = () => {
@@ -504,7 +584,10 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       undo,
       pendingSelection,
       loading,
-      error
+      error,
+      replayConfig,
+      replayResult,
+      replayError
     } = this.state
     const orderedSignals = sortManualSignals(signals)
     const selectedQuote = quotes.filter(item => item.date === selectedDate)[0]
@@ -590,7 +673,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
             ? validSequenceDescription
             : '请按清单中的具体提示修正。点位不会被自动丢弃或重排；同日相反信号必须由用户调整，系统不会猜测顺序。'}
         />
-        <p className={styles.engineNotice}>当前手动工作区尚无回测执行入口；本次只校验信号顺序，不会启动交易计算或发送真实订单。</p>
+        <p className={styles.engineNotice}>有效序列可进入独立的历史模拟引擎；非法序列不会被修补或重排。引擎不会调用旧自动策略，也不会发送真实订单。</p>
       </div> : null}
 
       {quotes.length > 0 ? <div className={styles.workspaceGrid}>
@@ -668,9 +751,97 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
                 </tbody>
               </table>
             </div>}
-          <p className={styles.disclaimer}>此清单只记录本地手动回测输入；校验仅检查信号顺序，不执行回测或提交任何真实订单。</p>
+          <p className={styles.disclaimer}>此清单记录本地手动回测输入；只有显式填写参数并主动运行后才执行历史模拟，不会提交任何真实订单。</p>
         </Card>
       </div> : null}
+
+      {activeQuery && quotes.length > 0 ? <Card title="手动回放参数（全部必填，无默认数值）" className={styles.replayCard}>
+        <div className={styles.replayConfigGrid}>
+          <label className={styles.field}>
+            <span>初始现金（元）</span>
+            <Input type="number" min="0" step="any" value={replayConfig.initialCash} placeholder="必填；无默认值" onChange={this.handleReplayConfigChange('initialCash')} />
+          </label>
+          <label className={styles.field}>
+            <span>每笔买入费前金额（元）</span>
+            <Input type="number" min="0" step="any" value={replayConfig.buyAmount} placeholder="必填；无默认值" onChange={this.handleReplayConfigChange('buyAmount')} />
+          </label>
+          <label className={styles.field}>
+            <span>买入费率（%）</span>
+            <Input type="number" min="0" step="any" value={replayConfig.buyFeeRatePercent} placeholder="必填；可明确输入 0" onChange={this.handleReplayConfigChange('buyFeeRatePercent')} />
+          </label>
+          <label className={styles.field}>
+            <span>卖出费率（%）</span>
+            <Input type="number" min="0" step="any" value={replayConfig.sellFeeRatePercent} placeholder="必填；可明确输入 0" onChange={this.handleReplayConfigChange('sellFeeRatePercent')} />
+          </label>
+          <label className={styles.field}>
+            <span>买入滑点（%）</span>
+            <Input type="number" min="0" step="any" value={replayConfig.buySlippageRatePercent} placeholder="必填；可明确输入 0" onChange={this.handleReplayConfigChange('buySlippageRatePercent')} />
+          </label>
+          <label className={styles.field}>
+            <span>卖出滑点（%）</span>
+            <Input type="number" min="0" step="any" value={replayConfig.sellSlippageRatePercent} placeholder="必填；可明确输入 0" onChange={this.handleReplayConfigChange('sellSlippageRatePercent')} />
+          </label>
+        </div>
+        <p className={styles.formulaNotice}>口径明示：每笔买入按此处填写的固定费前名义金额下单；卖出信号平掉单笔未平仓交易的全部份额。买入费另计；费用 = 对应成交名义金额 × 显式费率。买入成交净值 = 当日净值 × (1 + 买入滑点%)；卖出成交净值 = 当日净值 × (1 - 卖出滑点%)。资金不足不截断订单；所有金额/费率均由本次模拟参数提供。</p>
+        <div className={styles.replayActions}>
+          <Button type="primary" disabled={!sequenceValidation.isValid || loading || !!pendingSelection} onClick={this.runReplay}>运行模拟回测</Button>
+          <span>信号次日后的下一条区间内有效净值成交；信号日和成交日分别展示。</span>
+        </div>
+        {replayError ? <Alert className={styles.feedback} type="error" showIcon message="无法完成手动回放" description={replayError} /> : null}
+      </Card> : null}
+
+      {replayResult ? <Card title="逐日模拟结果" className={styles.replayCard}>
+        <Alert type="warning" showIcon message="仅历史模拟，不会向真实账户下单" description={replayResult.summary.endingPositionStatus === 'open'
+          ? `期末持仓仍为 open/unclosed，按 ${replayResult.summary.lastNavDate} 最后有效净值估值；不合成卖出，也不计入已完成交易。`
+          : '所有成交按显式参数回放；本结果不代表实盘成交或真实收益。'} />
+        <dl className={styles.replaySummary}>
+          <div><dt>期末总资产</dt><dd>{replayResult.summary.endingTotalAssets.toFixed(2)} 元</dd></div>
+          <div><dt>现金余额</dt><dd>{replayResult.summary.endingCash.toFixed(2)} 元</dd></div>
+          <div><dt>累计红利复投</dt><dd>{replayResult.summary.totalDividendReinvested.toFixed(2)} 元（已同步计入份额）</dd></div>
+          <div><dt>期末持仓估值</dt><dd>{replayResult.summary.openPositionValue.toFixed(2)} 元</dd></div>
+          <div><dt>持仓状态</dt><dd>{replayResult.summary.endingPositionStatus === 'open' ? 'open / 未平仓' : 'flat / 空仓'}</dd></div>
+          <div><dt>已完成交易</dt><dd>{replayResult.summary.completedTradeCount} 笔</dd></div>
+          <div><dt>未平仓交易</dt><dd>{replayResult.summary.openTradeCount} 笔（不计入已完成）</dd></div>
+          <div><dt>已实现收益</dt><dd>{replayResult.summary.realizedProfit.toFixed(2)} 元</dd></div>
+          <div><dt>未实现估值变动</dt><dd>{replayResult.summary.unrealizedProfit.toFixed(2)} 元</dd></div>
+          <div><dt>总资产变动（含未平仓估值）</dt><dd>{replayResult.summary.totalProfit.toFixed(2)} 元 · {replayResult.summary.totalReturnRatePercent.toFixed(2)}%</dd></div>
+          <div><dt>最后有效净值</dt><dd>{replayResult.summary.lastNavDate} · {replayResult.summary.lastNav.toFixed(4)}</dd></div>
+        </dl>
+
+        <h3>交易账本（信号日与成交日分列）</h3>
+        {replayResult.trades.length === 0
+          ? <p className={styles.emptyList}>没有交易信号；结果仅显示区间现金快照。</p>
+          : <div className={styles.tableWrap}>
+            <table className={styles.replayTable}>
+              <thead><tr><th>状态</th><th>买入信号日 → 成交日</th><th>买入净值 / 成交净值</th><th>卖出信号日 → 成交日</th><th>卖出净值 / 成交净值</th><th>份额</th><th>买入费</th><th>卖出费</th><th>已实现收益 / 期末估值</th></tr></thead>
+              <tbody>{replayResult.trades.map((trade, index) => <tr key={`${trade.entrySignalDate}-${index}`}>
+                <td>{trade.status === 'open' ? 'open / 未平仓' : 'closed / 已完成'}</td>
+                <td>{trade.entrySignalDate} → {trade.entryExecutionDate}</td>
+                <td>{trade.entryMarketNav.toFixed(4)} / {trade.entryFillNav.toFixed(4)}</td>
+                <td>{trade.exitSignalDate || '—'} → {trade.exitExecutionDate || '—'}</td>
+                <td>{trade.exitMarketNav === null ? '—' : `${trade.exitMarketNav.toFixed(4)} / ${trade.exitFillNav!.toFixed(4)}`}</td>
+                <td>{trade.shares.toFixed(6)}</td>
+                <td>{trade.entryFee.toFixed(2)}</td>
+                <td>{trade.exitFee === null ? '—' : trade.exitFee.toFixed(2)}</td>
+                <td>{trade.status === 'open' ? `期末估值 ${Number(trade.currentValue).toFixed(2)}` : `${Number(trade.realizedProfit).toFixed(2)} 元`}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>}
+
+        <h3>逐日资产快照</h3>
+        <div className={styles.tableWrap}>
+          <table className={styles.replayTable}>
+            <thead><tr><th>日期</th><th>净值</th><th>现金</th><th>当日红利复投</th><th>份额</th><th>持仓估值</th><th>总资产</th><th>持仓状态</th><th>已完成交易数</th></tr></thead>
+            <tbody>{replayResult.dailySnapshots.map(snapshot => <tr key={snapshot.date}>
+              <td>{snapshot.date}</td><td>{snapshot.nav.toFixed(4)}</td><td>{snapshot.cash.toFixed(2)}</td>
+              <td>{snapshot.dividendReinvestmentAmount.toFixed(2)}</td><td>{snapshot.shares.toFixed(6)}</td><td>{snapshot.positionValue.toFixed(2)}</td><td>{snapshot.totalAssets.toFixed(2)}</td>
+              <td>{snapshot.positionStatus === 'open' ? 'open / 未平仓' : 'flat / 空仓'}</td><td>{snapshot.completedTradeCount}</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+        <h3>数据口径与披露</h3>
+        <ul className={styles.disclosureList}>{replayResult.disclosures.map((disclosure, index) => <li key={index}>{disclosure}</li>)}</ul>
+      </Card> : null}
 
       <Modal
         visible={!!pendingSelection}

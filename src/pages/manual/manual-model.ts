@@ -1,8 +1,20 @@
 export type ManualSignalType = 'buy' | 'sell'
 
+export type ManualCorporateActionKind = 'share-split' | 'distribution' | 'unclassified'
+export type ManualCorporateActionUnit = 'share-multiplier' | 'cash-per-share' | 'unknown'
+
+export interface ManualCorporateAction {
+  date: string
+  kind: ManualCorporateActionKind
+  value: number | null
+  valueUnit: ManualCorporateActionUnit
+  description: string
+}
+
 export interface ManualQuote {
   date: string
   val: number
+  corporateActions?: ManualCorporateAction[]
 }
 
 export interface ManualSignal {
@@ -133,15 +145,55 @@ export const validateManualSignalSequence = (
 
 /** Filter and sort provider history without substituting a nearby date for a missing date. */
 export const filterManualQuotes = (
-  history: Record<string, { date?: string, val: number }>,
+  history: Record<string, {
+    date?: string,
+    val: number,
+    bonus?: number | string | null,
+    isBonusPortion?: boolean,
+    unitMoney?: string
+  }>,
   startDate: string,
   endDate: string
 ): ManualQuote[] => Object.keys(history)
   .filter(date => date >= startDate && date <= endDate)
-  .map(date => ({
-    date: history[date].date || date,
-    val: Number(history[date].val)
-  }))
+  .map(date => {
+    const source = history[date]
+    const quoteDate = source.date || date
+    const description = typeof source.unitMoney === 'string' ? source.unitMoney.trim() : ''
+    const rawBonusPresent = source.bonus !== undefined && source.bonus !== null && source.bonus !== ''
+    const parsedBonus = rawBonusPresent ? Number(source.bonus) : NaN
+    const hasUnexplainedBonus = Boolean(source.isBonusPortion)
+      || (rawBonusPresent && (!Number.isFinite(parsedBonus) || Number(parsedBonus) !== 0))
+    if (!description && !hasUnexplainedBonus) {
+      return { date: quoteDate, val: Number(source.val) }
+    }
+    const eventDescription = description || '数据源报告 bonus/份额事件字段，但缺少 unitMoney 事件说明'
+    const splitMatch = description.match(/^(?:每份(?:基金)?份额)?(?:拆分|折算)\s*(?:为\s*)?(\d+(?:\.\d+)?)\s*份$/)
+    const cashPerShareMatch = description.match(/^(?:分红\s*[：:]?\s*)?每份(?:(?:基金)?份额)?(?:派现金|派现|现金分红|现金红利|派息|分红|派发现金)\s*(\d+(?:\.\d+)?)\s*元$/)
+    const isSplit = Boolean(source.isBonusPortion) || /拆分|折算/.test(description)
+    const isDistribution = /分红|派现|派息|红利|现金/.test(description)
+    const matchedAmount = splitMatch ? Number(splitMatch[1])
+      : cashPerShareMatch ? Number(cashPerShareMatch[1]) : null
+    const sourceAmountMatches = matchedAmount !== null && (!rawBonusPresent
+      || (Number.isFinite(parsedBonus)
+        && Math.abs(Number(parsedBonus) - matchedAmount) <= Math.max(1, matchedAmount) * 1e-10))
+    const valueUnit: ManualCorporateActionUnit = splitMatch && sourceAmountMatches
+      ? 'share-multiplier'
+      : cashPerShareMatch && sourceAmountMatches ? 'cash-per-share' : 'unknown'
+    return {
+      date: quoteDate,
+      val: Number(source.val),
+      corporateActions: [{
+        date: quoteDate,
+        kind: isSplit ? 'share-split' as ManualCorporateActionKind
+          : isDistribution ? 'distribution' as ManualCorporateActionKind
+            : 'unclassified' as ManualCorporateActionKind,
+        value: sourceAmountMatches ? matchedAmount : null,
+        valueUnit,
+        description: eventDescription
+      }]
+    }
+  })
   .filter(item => /^\d{4}-\d{2}-\d{2}$/.test(item.date) && Number.isFinite(item.val) && item.val > 0)
   .filter(item => item.date >= startDate && item.date <= endDate)
   .sort((left, right) => left.date.localeCompare(right.date))
