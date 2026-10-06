@@ -207,6 +207,24 @@
   font-size: 13px;
 }
 
+.asOfControls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 4px;
+  color: #4d5664;
+  font-size: 13px;
+}
+
+.asOfNotice {
+  margin: 4px 0 12px;
+  color: #697586;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .chartWrap {
   width: 100%;
 }

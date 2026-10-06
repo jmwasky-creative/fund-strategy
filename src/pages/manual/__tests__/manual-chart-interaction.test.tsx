@@ -677,3 +677,203 @@ describe('manual sequence validation feedback', () => {
     tree.unmount()
   })
 })
+
+
+describe('manual as-of replay page', () => {
+  const asOfQuotes: ManualQuote[] = [
+    { date: '2024-01-01', val: 1.00 },
+    { date: '2024-01-04', val: 1.04 },
+    { date: '2024-01-08', val: 1.08 },
+    { date: '2024-01-12', val: 1.12 },
+    { date: '2024-01-15', val: 1.15 },
+    { date: '2024-01-20', val: 1.20 },
+    { date: '2024-01-22', val: 1.22 }
+  ]
+
+  it('reveals a complete first calendar week, accumulates each next week, clips the final partial week, then disables', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-01', endDate: '2024-01-22' },
+      historyQuotes: asOfQuotes,
+      quotes: asOfQuotes.slice(0, 2),
+      asOfDate: '2024-01-07',
+      signals: [
+        { id: 1, date: '2024-01-04', type: 'buy' },
+        { id: 2, date: '2024-01-08', type: 'sell' },
+        { id: 3, date: '2024-01-20', type: 'buy' }
+      ],
+      selectedDate: '2024-01-04'
+    })
+
+    const visibleQuoteDates = () => tree.root.findAllByType('circle')
+      .filter(circle => typeof circle.props['aria-label'] === 'string'
+        && circle.props['aria-label'].startsWith('选择净值日期 '))
+      .map(circle => circle.props['aria-label'].match(/\d{4}-\d{2}-\d{2}/)![0])
+    expect(page.getCurrentAsOfSnapshot().asOfDate).toBe('2024-01-07')
+    expect(visibleQuoteDates()).toEqual(['2024-01-01', '2024-01-04'])
+    expect(page.getCurrentAsOfSnapshot().signals).toHaveLength(1)
+    expect(renderedText(tree.root)).not.toContain('2024-01-08 卖出')
+    expect(buttonByText(tree, '下一周').props.disabled).toBe(false)
+
+    buttonByText(tree, '下一周').props.onClick()
+    expect(page.state.asOfDate).toBe('2024-01-14')
+    expect(visibleQuoteDates()).toEqual(['2024-01-01', '2024-01-04', '2024-01-08', '2024-01-12'])
+    expect(page.getCurrentAsOfSnapshot().signals).toHaveLength(2)
+    expect(renderedText(tree.root)).toContain('2024-01-08')
+
+    buttonByText(tree, '下一周').props.onClick()
+    expect(page.state.asOfDate).toBe('2024-01-21')
+    expect(visibleQuoteDates()).toEqual([
+      '2024-01-01', '2024-01-04', '2024-01-08', '2024-01-12', '2024-01-15', '2024-01-20'
+    ])
+    expect(page.getCurrentAsOfSnapshot().signals).toHaveLength(3)
+
+    buttonByText(tree, '下一周').props.onClick()
+    expect(page.state.asOfDate).toBe('2024-01-22')
+    expect(visibleQuoteDates()).toEqual(asOfQuotes.map(quote => quote.date))
+    expect(buttonByText(tree, '下一周').props.disabled).toBe(true)
+    buttonByText(tree, '下一周').props.onClick()
+    expect(page.state.asOfDate).toBe('2024-01-22')
+
+    tree.unmount()
+  })
+
+  it('passes only the current filtered NAV/signal snapshot and as-of range to the replay engine', async () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    jest.useFakeTimers()
+    page.setState({
+      draftFundCode: '260108',
+      activeQuery: { fundCode: '260108', startDate: '2024-01-01', endDate: '2024-01-22' },
+      historyQuotes: asOfQuotes,
+      quotes: asOfQuotes.slice(0, 2),
+      asOfDate: '2024-01-07',
+      signals: [
+        { id: 1, date: '2024-01-04', type: 'buy' },
+        { id: 2, date: '2024-01-08', type: 'sell' }
+      ],
+      selectedDate: '2024-01-04',
+      replayConfig: {
+        initialCash: '1000',
+        buyAmount: '500',
+        buyFeeRatePercent: '0',
+        sellFeeRatePercent: '0',
+        buySlippageRatePercent: '0',
+        sellSlippageRatePercent: '0'
+      }
+    })
+    page.executeReplay = jest.fn(() => new Promise(() => undefined))
+
+    buttonByText(tree, '运行模拟回测').props.onClick()
+    await flushReplayTimers()
+
+    expect(page.executeReplay).toHaveBeenCalledTimes(1)
+    const [validation, replayQuotes, replayRange] = page.executeReplay.mock.calls[0]
+    expect(replayQuotes.map((quote: ManualQuote) => quote.date)).toEqual(['2024-01-01', '2024-01-04'])
+    expect(replayQuotes.every((quote: ManualQuote) => quote.date <= '2024-01-07')).toBe(true)
+    expect(replayRange).toEqual({ startDate: '2024-01-01', endDate: '2024-01-07' })
+    expect(validation.standardizedSequence.trades.map((trade: any) => trade.entrySignal.id)).toEqual([1])
+    expect(JSON.stringify(validation)).not.toContain('2024-01-08')
+
+    tree.unmount()
+  })
+
+  it('resets the as-of window for a new range and ignores a slower old history response', async () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    page.setState({
+      draftFundCode: '260108',
+      draftStartDate: '2024-01-01',
+      draftEndDate: '2024-01-31'
+    })
+    let resolveFirst: (quotes: ManualQuote[]) => void = () => undefined
+    let resolveSecond: (quotes: ManualQuote[]) => void = () => undefined
+    manualHistoryMock
+      .mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve }))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveSecond = resolve }))
+
+    page.submitQuery({ preventDefault: jest.fn() })
+    page.handleDateChange('draftStartDate')({ currentTarget: { value: '2024-02-01' } })
+    page.handleDateChange('draftEndDate')({ currentTarget: { value: '2024-03-01' } })
+    page.submitQuery({ preventDefault: jest.fn() })
+    resolveSecond([
+      { date: '2024-02-01', val: 1.00 },
+      { date: '2024-02-07', val: 1.01 },
+      { date: '2024-02-08', val: 1.02 },
+      { date: '2024-02-28', val: 1.03 }
+    ])
+    for (let index = 0; index < 8; index += 1) {
+      await Promise.resolve()
+    }
+
+    expect(page.state.activeQuery).toEqual({ fundCode: '260108', startDate: '2024-02-01', endDate: '2024-03-01' })
+    expect(page.state.asOfDate).toBe('2024-02-07')
+    expect(page.getCurrentAsOfSnapshot().quotes.map((quote: ManualQuote) => quote.date)).toEqual(['2024-02-01', '2024-02-07'])
+
+    resolveFirst([
+      { date: '2024-01-01', val: 2.00 },
+      { date: '2024-01-08', val: 2.01 }
+    ])
+    for (let index = 0; index < 8; index += 1) {
+      await Promise.resolve()
+    }
+    expect(page.state.activeQuery.startDate).toBe('2024-02-01')
+    expect(page.state.asOfDate).toBe('2024-02-07')
+    expect(page.state.historyQuotes.every((quote: ManualQuote) => quote.date >= '2024-02-01')).toBe(true)
+
+    tree.unmount()
+  })
+})
+
+
+describe('manual as-of replay async invalidation', () => {
+  it('cancels an in-flight replay when the as-of week advances and ignores its late completion', async () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    jest.useFakeTimers()
+    const historyQuotes: ManualQuote[] = [
+      { date: '2024-01-01', val: 1.00 },
+      { date: '2024-01-04', val: 1.04 },
+      { date: '2024-01-08', val: 1.08 },
+      { date: '2024-01-12', val: 1.12 }
+    ]
+    page.setState({
+      draftFundCode: '260108',
+      draftStartDate: '2024-01-01',
+      draftEndDate: '2024-01-14',
+      activeQuery: { fundCode: '260108', startDate: '2024-01-01', endDate: '2024-01-14' },
+      historyQuotes,
+      quotes: historyQuotes.slice(0, 2),
+      asOfDate: '2024-01-07',
+      signals: [{ id: 1, date: '2024-01-04', type: 'buy' }],
+      selectedDate: '2024-01-04',
+      replayConfig: {
+        initialCash: '1000',
+        buyAmount: '500',
+        buyFeeRatePercent: '0',
+        sellFeeRatePercent: '0',
+        buySlippageRatePercent: '0',
+        sellSlippageRatePercent: '0'
+      }
+    })
+    let resolveRun: (result: any) => void = () => undefined
+    page.executeReplay = jest.fn(() => new Promise(resolve => { resolveRun = resolve }))
+
+    buttonByText(tree, '运行模拟回测').props.onClick()
+    await flushReplayTimers()
+    expect(page.state.replayStatus).toBe('running')
+    buttonByText(tree, '下一周').props.onClick()
+    expect(page.state.asOfDate).toBe('2024-01-14')
+    expect(page.state.replayStatus).toBe('cancelled')
+
+    resolveRun({ summary: { endingPositionStatus: 'open' } })
+    for (let index = 0; index < 8; index += 1) {
+      await Promise.resolve()
+    }
+    expect(page.state.replayResult).toBeNull()
+    expect(page.state.replayStatus).toBe('cancelled')
+
+    tree.unmount()
+  })
+})
