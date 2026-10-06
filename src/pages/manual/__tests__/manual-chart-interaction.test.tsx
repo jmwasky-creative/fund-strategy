@@ -79,9 +79,11 @@ const invalidChartPoints = (tree: ReactTestRenderer): ReactTestInstance[] => tre
 )
 
 const flushReplayTimers = async () => {
-  jest.runOnlyPendingTimers()
-  for (let index = 0; index < 6; index += 1) {
-    await Promise.resolve()
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    jest.runOnlyPendingTimers()
+    for (let index = 0; index < 6; index += 1) {
+      await Promise.resolve()
+    }
   }
 }
 
@@ -541,6 +543,65 @@ describe('manual sequence validation feedback', () => {
     expect(renderedText(tree.root)).toContain('有修改尚未加载')
     expect(buttonByText(tree, '运行模拟回测').props.disabled).toBe(true)
 
+    tree.unmount()
+  })
+
+  it('cancels the real UI replay after ledger dates advance and keeps the page interactive without partial results', async () => {
+    jest.useRealTimers()
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const replayQuotes = createDenseQuotes()
+    const startDate = replayQuotes[0].date
+    const endDate = replayQuotes[replayQuotes.length - 1].date
+    page.setState({
+      draftFundCode: '260108',
+      draftStartDate: startDate,
+      draftEndDate: endDate,
+      activeQuery: { fundCode: '260108', startDate, endDate },
+      quotes: replayQuotes,
+      signals: [{ id: 1, date: startDate, type: 'buy' }],
+      selectedDate: startDate,
+      selectedSignalId: null,
+      nextSignalId: 2,
+      replayConfig: {
+        initialCash: '1000',
+        buyAmount: '500',
+        buyFeeRatePercent: '0',
+        sellFeeRatePercent: '0',
+        buySlippageRatePercent: '0',
+        sellSlippageRatePercent: '0'
+      },
+      replayResult: null,
+      replayProgress: null
+    })
+
+    buttonByText(tree, '运行模拟回测').props.onClick()
+    const deadline = Date.now() + 3000
+    while ((!page.state.replayProgress || page.state.replayProgress.processedDates < 24) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+
+    expect(page.state.replayStatus).toBe('running')
+    expect(page.state.replayProgress.processedDates).toBeGreaterThanOrEqual(24)
+    expect(page.state.replayProgress.totalDates).toBe(replayQuotes.length)
+    expect(page.state.replayProgress.processedDates).toBeLessThan(replayQuotes.length)
+    buttonByText(tree, '取消本次运行').props.onClick()
+    expect(page.state.replayStatus).toBe('cancelled')
+    expect(page.state.replayResult).toBeNull()
+    expect(page.state.replayError).toBe('')
+
+    const stoppedAt = page.state.replayProgress.processedDates
+    await new Promise(resolve => setTimeout(resolve, 40))
+    expect(page.state.replayProgress.processedDates).toBe(stoppedAt)
+    expect(page.state.replayStatus).toBe('cancelled')
+    expect(page.state.replayResult).toBeNull()
+    expect(page.state.signals).toEqual([{ id: 1, date: startDate, type: 'buy' }])
+    expect(page.state.replayConfig.buyAmount).toBe('500')
+    expect(renderedText(tree.root)).toContain('已取消；本次运行的部分结果不会展示')
+
+    page.selectSignal({ id: 1, date: startDate, type: 'buy' })
+    expect(page.state.selectedSignalId).toBe(1)
+    expect(page.state.replayStatus).toBe('cancelled')
     tree.unmount()
   })
 })

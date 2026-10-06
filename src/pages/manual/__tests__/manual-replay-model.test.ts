@@ -1,5 +1,11 @@
 import { ManualQuote, ManualSequenceValidation, ManualSignal } from '../manual-model'
-import { ManualReplayConfig, runManualReplay } from '../manual-replay-model'
+import {
+  ManualReplayCancelledError,
+  ManualReplayConfig,
+  ManualReplayResult,
+  runManualReplay,
+  runManualReplayCooperatively
+} from '../manual-replay-model'
 
 const config: ManualReplayConfig = {
   initialCash: 1000,
@@ -401,5 +407,39 @@ describe('manual replay engine', () => {
     ]), range, config)).toThrow('重复基金净值')
     expect(() => runManualReplay(sequence, quotes([{ date: '2024-01-03', val: 10 }]), range, config)).toThrow('超出所选区间')
     expect(() => runManualReplay(sequence, quotes([{ date: '2024-01-01', val: 0 }]), range, config)).toThrow('无效日期或非正数净值')
+  })
+
+  it('cancels the real cooperative ledger after completed dates and never returns a partial result', async () => {
+    const replayQuotes: ManualQuote[] = Array.from({ length: 120 }, (_item, index) => {
+      const date = new Date(Date.UTC(2024, 0, 1 + index)).toISOString().slice(0, 10)
+      return { date, val: 10 + index / 100 }
+    })
+    const range = { startDate: replayQuotes[0].date, endDate: replayQuotes[replayQuotes.length - 1].date }
+    const cancellation = { cancelled: false }
+    const progress: number[] = []
+    let returnedResult: ManualReplayResult | null = null
+    const execution = runManualReplayCooperatively(
+      oneOpenTrade(range.startDate, range.endDate),
+      replayQuotes,
+      range,
+      config,
+      {
+        isCancelled: () => cancellation.cancelled,
+        onProgress: processedDates => {
+          progress.push(processedDates)
+          if (processedDates >= 24) {
+            cancellation.cancelled = true
+          }
+        }
+      }
+    ).then(result => {
+      returnedResult = result
+      return result
+    })
+
+    await expect(execution).rejects.toBeInstanceOf(ManualReplayCancelledError)
+    expect(progress).toEqual([8, 16, 24])
+    expect(progress[progress.length - 1]).toBeLessThan(replayQuotes.length)
+    expect(returnedResult).toBeNull()
   })
 })

@@ -75,6 +75,18 @@ export interface ManualReplayResult {
   }
 }
 
+export interface ManualReplayExecutionOptions {
+  isCancelled: () => boolean
+  onProgress?: (processedDates: number, totalDates: number) => void
+}
+
+export class ManualReplayCancelledError extends Error {
+  constructor() {
+    super('手动回放已取消。')
+    this.name = 'ManualReplayCancelledError'
+  }
+}
+
 interface ScheduledOrder {
   tradeIndex: number
   signal: ManualSignal
@@ -223,12 +235,12 @@ const scheduleSignal = (
  * process existing holdings first, then execute orders at that day's NAV and slippage.
  * All rates are explicit.
  */
-export const runManualReplay = (
+function* createManualReplaySteps(
   validation: ManualSequenceValidation,
   inputQuotes: ManualQuote[],
   range: ManualReplayRange,
   config: ManualReplayConfig
-): ManualReplayResult => {
+): Generator<number, ManualReplayResult, void> {
   assertConfig(config)
   if (!range || !isCalendarDate(range.startDate) || !isCalendarDate(range.endDate) || range.startDate > range.endDate) {
     fail('回测日期区间无效。')
@@ -302,7 +314,8 @@ export const runManualReplay = (
   }))
   const dailySnapshots: ManualReplayDailySnapshot[] = []
 
-  quotes.forEach(quote => {
+  for (let quoteIndex = 0; quoteIndex < quotes.length; quoteIndex += 1) {
+    const quote = quotes[quoteIndex]
     const actions = quote.corporateActions || []
     const orders = schedule[quote.date] || []
     let dividendReinvestmentAmount = 0
@@ -421,7 +434,8 @@ export const runManualReplay = (
       positionStatus: shares > 0 ? 'open' : 'flat',
       completedTradeCount
     })
-  })
+    yield quoteIndex + 1
+  }
 
   if ((activeTradeIndex !== null) !== (sourceTrades.length > 0
     && sourceTrades[sourceTrades.length - 1].status === 'open')) {
@@ -434,7 +448,7 @@ export const runManualReplay = (
   const unrealizedProfit = activeTradeIndex === null
     ? 0
     : openPositionValue - trades[activeTradeIndex].entryNotional - trades[activeTradeIndex].entryFee
-  const endingPositionStatus = openTradeCount > 0 ? 'open' : 'flat'
+  const endingPositionStatus: 'open' | 'flat' = openTradeCount > 0 ? 'open' : 'flat'
   const openTradeIndex = activeTradeIndex
   if (openTradeIndex !== null) {
     trades[openTradeIndex].currentValue = openPositionValue
@@ -462,5 +476,60 @@ export const runManualReplay = (
       totalReturnRatePercent: (endingTotalAssets / config.initialCash - 1) * 100,
       endingPositionStatus
     }
+  }
+}
+
+export const runManualReplay = (
+  validation: ManualSequenceValidation,
+  inputQuotes: ManualQuote[],
+  range: ManualReplayRange,
+  config: ManualReplayConfig
+): ManualReplayResult => {
+  const execution = createManualReplaySteps(validation, inputQuotes, range, config)
+  let step = execution.next()
+  while (!step.done) {
+    step = execution.next()
+  }
+  return step.value
+}
+
+/**
+ * Run the same ledger engine in bounded date batches. Yielding to the browser
+ * between batches lets input events run; cancellation is checked before any
+ * subsequent date is processed and before a result can be returned.
+ */
+export const runManualReplayCooperatively = async (
+  validation: ManualSequenceValidation,
+  inputQuotes: ManualQuote[],
+  range: ManualReplayRange,
+  config: ManualReplayConfig,
+  options: ManualReplayExecutionOptions
+): Promise<ManualReplayResult> => {
+  const execution = createManualReplaySteps(validation, inputQuotes, range, config)
+  const totalDates = Array.isArray(inputQuotes) ? inputQuotes.length : 0
+  let step: IteratorResult<number, ManualReplayResult>
+  const throwIfCancelled = () => {
+    if (options.isCancelled()) {
+      throw new ManualReplayCancelledError()
+    }
+  }
+
+  throwIfCancelled()
+  step = execution.next()
+  while (true) {
+    throwIfCancelled()
+    if (step.done) {
+      return step.value
+    }
+
+    const processedDates = step.value
+    if (processedDates % 8 === 0 || processedDates === totalDates) {
+      if (options.onProgress) {
+        options.onProgress(processedDates, totalDates)
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, 0))
+      throwIfCancelled()
+    }
+    step = execution.next()
   }
 }

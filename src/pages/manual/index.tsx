@@ -24,7 +24,8 @@ import {
 import {
   ManualReplayConfig,
   ManualReplayResult,
-  runManualReplay
+  ManualReplayCancelledError,
+  runManualReplayCooperatively
 } from './manual-replay-model'
 import {
   getManualChartHitCandidates,
@@ -99,6 +100,7 @@ interface ManualWorkspaceState {
   replayError: string
   replayStatus: ManualReplayStatus
   replayStatusMessage: string
+  replayProgress: { processedDates: number, totalDates: number } | null
   replayInputRevision: number
   replayResultRevision: number | null
 }
@@ -107,12 +109,18 @@ const errorMessage = (error: any): string => error && typeof error.message === '
   ? error.message
   : '行情读取失败，请检查网络后重试。'
 
+interface ManualReplayCancellation {
+  cancelled: boolean
+}
+
 export default class ManualBacktestPage extends Component<{}, ManualWorkspaceState> {
   private searchTimeout: any = null
   private searchVersion = 0
   private replayRequestId = 0
   private replayStartTimer: any = null
   private replayExecutionPending = false
+
+  private activeReplayCancellation: ManualReplayCancellation | null = null
 
   state: ManualWorkspaceState = {
     draftFundCode: '',
@@ -144,6 +152,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     replayError: '',
     replayStatus: 'idle',
     replayStatusMessage: '待运行；请确认基金、区间、信号和所有显式参数。',
+    replayProgress: null,
     replayInputRevision: 0,
     replayResultRevision: null
   }
@@ -154,6 +163,10 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     }
     this.replayRequestId += 1
     this.replayExecutionPending = false
+    if (this.activeReplayCancellation) {
+      this.activeReplayCancellation.cancelled = true
+      this.activeReplayCancellation = null
+    }
     if (this.replayStartTimer) {
       clearTimeout(this.replayStartTimer)
       this.replayStartTimer = null
@@ -163,6 +176,10 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
   private invalidateReplayInputs = () => {
     this.replayRequestId += 1
     this.replayExecutionPending = false
+    if (this.activeReplayCancellation) {
+      this.activeReplayCancellation.cancelled = true
+      this.activeReplayCancellation = null
+    }
     if (this.replayStartTimer) {
       clearTimeout(this.replayStartTimer)
       this.replayStartTimer = null
@@ -177,6 +194,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
           : previousState.replayResult
             ? '输入已变化；上一次结果已过期，不可作为当前结果，请重新运行。'
             : '输入已更新；请在确认后运行回测。',
+        replayProgress: null,
         replayError: ''
       }
     })
@@ -478,8 +496,13 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     validation: ManualSequenceValidation,
     quotes: ManualQuote[],
     range: { startDate: string, endDate: string },
-    config: ManualReplayConfig
-  ): Promise<ManualReplayResult> => Promise.resolve().then(() => runManualReplay(validation, quotes, range, config))
+    config: ManualReplayConfig,
+    cancellation: ManualReplayCancellation,
+    onProgress: (processedDates: number, totalDates: number) => void
+  ): Promise<ManualReplayResult> => runManualReplayCooperatively(validation, quotes, range, config, {
+    isCancelled: () => cancellation.cancelled,
+    onProgress
+  })
 
   private runReplay = () => {
     if (this.replayExecutionPending || this.state.replayStatus === 'running') {
@@ -525,10 +548,13 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     const inputRevision = this.state.replayInputRevision
     const quotes = this.state.quotes.slice()
     const range = { startDate: query.startDate, endDate: query.endDate }
+    const cancellation: ManualReplayCancellation = { cancelled: false }
+    this.activeReplayCancellation = cancellation
     this.replayExecutionPending = true
     this.setState({
       replayStatus: 'running',
       replayStatusMessage: '正在按已确认的基金、区间、信号和参数运行；可取消本次运行。',
+      replayProgress: { processedDates: 0, totalDates: quotes.length },
       replayError: ''
     })
     // Yield a paint opportunity so the busy state and cancel control are visible before local calculation starts.
@@ -537,11 +563,20 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       if (requestId !== this.replayRequestId) {
         return
       }
-      Promise.resolve().then(() => this.executeReplay(validation, quotes, range, config)).then(replayResult => {
+      Promise.resolve().then(() => this.executeReplay(validation, quotes, range, config, cancellation, (processedDates, totalDates) => {
+        if (requestId !== this.replayRequestId || cancellation.cancelled) {
+          return
+        }
+        this.setState({
+          replayProgress: { processedDates, totalDates },
+          replayStatusMessage: `正在处理 ${processedDates} / ${totalDates} 个净值日期；可取消本次运行。`
+        })
+      })).then(replayResult => {
         if (requestId !== this.replayRequestId || inputRevision !== this.state.replayInputRevision) {
           return
         }
         this.replayExecutionPending = false
+        this.activeReplayCancellation = null
         this.setState({
           replayResult,
           replayResultRevision: inputRevision,
@@ -550,10 +585,23 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
           replayError: ''
         })
       }).catch(error => {
+        if (error instanceof ManualReplayCancelledError) {
+          if (requestId === this.replayRequestId && inputRevision === this.state.replayInputRevision) {
+            this.replayExecutionPending = false
+            this.activeReplayCancellation = null
+            this.setState({
+              replayStatus: 'cancelled',
+              replayStatusMessage: '已取消；本次运行的部分结果不会展示，点位和参数已完整保留。',
+              replayError: ''
+            })
+          }
+          return
+        }
         if (requestId !== this.replayRequestId || inputRevision !== this.state.replayInputRevision) {
           return
         }
         this.replayExecutionPending = false
+        this.activeReplayCancellation = null
         this.setState({
           replayStatus: 'failure',
           replayStatusMessage: '运行失败；未展示本次部分结果，点位和参数均已保留，可使用相同输入重试。',
@@ -566,6 +614,10 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
   private cancelReplay = () => {
     if (!this.replayExecutionPending && this.state.replayStatus !== 'running') {
       return
+    }
+    if (this.activeReplayCancellation) {
+      this.activeReplayCancellation.cancelled = true
+      this.activeReplayCancellation = null
     }
     this.replayRequestId += 1
     this.replayExecutionPending = false
@@ -703,6 +755,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       replayError,
       replayStatus,
       replayStatusMessage,
+      replayProgress,
       replayInputRevision,
       replayResultRevision
     } = this.state
@@ -953,6 +1006,10 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
             description={replayStatusMessage}
           />
           {replayStatus === 'running' ? <Spin size="small" tip="正在计算历史模拟…" /> : null}
+          {replayStatus === 'running' && replayProgress ? <div aria-live="polite">
+            <progress max={replayProgress.totalDates} value={replayProgress.processedDates} aria-label="手动回放进度" />
+            <span> 已处理 {replayProgress.processedDates} / {replayProgress.totalDates} 个净值日期</span>
+          </div> : null}
         </div>
         {replayError ? <Alert className={styles.feedback} type="error" showIcon message="无法完成手动回放" description={replayError} /> : null}
       </Card> : null}
