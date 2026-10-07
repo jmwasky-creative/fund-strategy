@@ -838,8 +838,20 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     const selectedPoint = selectedDate ? plotted.find(point => point.date === selectedDate) || null : null
     const hoveredPoint = hoveredDate ? plotted.find(point => point.date === hoveredDate) || null : null
     const readoutPoint = hoveredPoint || selectedPoint
+    const chartReadout = <div
+      className={styles.chartReadout}
+      role="status"
+      aria-live="polite"
+      aria-label={readoutPoint
+        ? `当前定位实际交易日：${readoutPoint.date}，单位净值 ${readoutPoint.val.toFixed(4)}`
+        : '请先在净值图上选择一个点位。'}
+    >
+      {readoutPoint
+        ? <span>当前定位实际交易日：<strong>{readoutPoint.date}</strong>　单位净值：<strong>{readoutPoint.val.toFixed(4)}</strong></span>
+        : <span>请先在净值图上选择一个点位。</span>}
+    </div>
     if (plotted.length === 0) {
-      return null
+      return <div className={styles.chartWrap}>{chartReadout}</div>
     }
     const replayResult = this.getCurrentReplayResult()
     const replayMarkers = replayResult ? getManualReplayChartMarkers(replayResult.trades) : []
@@ -860,18 +872,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     const openSignalIds = this.getOpenSignalIds(sequenceValidation)
 
     return <div className={styles.chartWrap}>
-      <div
-        className={styles.chartReadout}
-        role="status"
-        aria-live="polite"
-        aria-label={readoutPoint
-          ? `当前定位实际交易日：${readoutPoint.date}，单位净值 ${readoutPoint.val.toFixed(4)}`
-          : '请先在净值图上选择一个点位。'}
-      >
-        {readoutPoint
-          ? <span>当前定位实际交易日：<strong>{readoutPoint.date}</strong>　单位净值：<strong>{readoutPoint.val.toFixed(4)}</strong></span>
-          : <span>请先在净值图上选择一个点位。</span>}
-      </div>
+      {chartReadout}
       <svg
         className={styles.chart}
         viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}

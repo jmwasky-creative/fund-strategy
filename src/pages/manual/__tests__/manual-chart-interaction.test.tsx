@@ -527,6 +527,45 @@ describe('manual point-mode chart workflow', () => {
 
     tree.unmount()
   })
+
+  it('keeps the chart readout visible with zero as-of NAVs and reveals future NAV only after advancing', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const futureQuote: ManualQuote = { date: '2024-01-12', val: 9.99 }
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-01', endDate: '2024-01-31' },
+      historyQuotes: [futureQuote],
+      quotes: [],
+      asOfDate: '2024-01-07',
+      signals: [],
+      selectedDate: '',
+      latchedQuote: null,
+      selectionSource: null,
+      hoveredDate: ''
+    })
+
+    const chartReadout = () => tree.root.findAllByType('div').filter(node =>
+      node.props.role === 'status' && node.props['aria-label'] !== undefined
+    )[0]
+    const chartSvgs = () => tree.root.findAllByType('svg').filter(svg => svg.props['aria-label'])
+
+    expect(chartReadout()).toBeTruthy()
+    expect(chartReadout().props['aria-label']).toBe('请先在净值图上选择一个点位。')
+    expect(renderedText(chartReadout())).toContain('请先在净值图上选择一个点位。')
+    expect(renderedText(tree.root)).toContain('2024-01-07')
+    expect(buttonByText(tree, '下一周').props.disabled).toBe(false)
+    expect(chartSvgs()).toHaveLength(0)
+    expect(JSON.stringify(tree.toJSON())).not.toContain('2024-01-12')
+    expect(JSON.stringify(tree.toJSON())).not.toContain('9.9900')
+
+    buttonByText(tree, '下一周').props.onClick()
+    expect(page.state.asOfDate).toBe('2024-01-14')
+    expect(chartSvgs()).toHaveLength(1)
+    expect(renderedText(tree.root)).toContain('2024-01-12')
+    expect(JSON.stringify(tree.toJSON())).toContain('9.9900')
+
+    tree.unmount()
+  })
 })
 
 describe('manual sequence validation feedback', () => {
