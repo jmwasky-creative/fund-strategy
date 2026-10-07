@@ -589,6 +589,37 @@ describe('manual sequence validation feedback', () => {
     tree.unmount()
   })
 
+  it('revalidates add-on buys when a signal is added, removed, and restored by undo', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const quotes = [
+      { date: '2024-01-02', val: 1.02 },
+      { date: '2024-01-03', val: 1.03 },
+      { date: '2024-01-04', val: 1.04 }
+    ]
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-02', endDate: '2024-01-04' },
+      quotes,
+      signals: [{ id: 1, date: '2024-01-02', type: 'buy' }],
+      selectedDate: '2024-01-03',
+      latchedQuote: quotes[1],
+      selectionSource: 'chart',
+      selectedSignalId: null,
+      nextSignalId: 2,
+      undo: null
+    })
+
+    page.addSignal('buy')
+    expect(page.getSequenceValidation().standardizedSequence.trades[0].entrySignals.map((signal: any) => signal.id)).toEqual([1, 2])
+
+    page.removeSignal(2, { stopPropagation: jest.fn() } as any)
+    expect(page.getSequenceValidation().standardizedSequence.trades[0].entrySignals.map((signal: any) => signal.id)).toEqual([1])
+
+    page.undoLastEdit()
+    expect(page.getSequenceValidation().standardizedSequence.trades[0].entrySignals.map((signal: any) => signal.id)).toEqual([1, 2])
+    tree.unmount()
+  })
+
   it('requires explicit simulation parameters and renders an estimated but unclosed terminal holding', async () => {
     const tree = renderer.create(<ManualBacktestPage />)
     const page = tree.getInstance() as any
@@ -672,10 +703,11 @@ describe('manual sequence validation feedback', () => {
       ],
       signals: [
         { id: 1, date: '2024-01-02', type: 'buy' },
-        { id: 2, date: '2024-01-04', type: 'sell' }
+        { id: 2, date: '2024-01-03', type: 'buy' },
+        { id: 3, date: '2024-01-04', type: 'sell' }
       ],
       replayConfig: {
-        initialCash: '1000',
+        initialCash: '1500',
         buyAmount: '500',
         buyFeeRatePercent: '0.2',
         sellFeeRatePercent: '0.2',
@@ -694,24 +726,25 @@ describe('manual sequence validation feedback', () => {
     expect(successText).toContain('胜率（已平仓）')
     expect(successText).toContain('已完成往返交易')
     expect(successText).toContain('扣除费用并按滑点成交后 realizedProfit')
-    expect(successText).toContain('买入：2024-01-02 → 2024-01-03')
+    expect(successText).toContain('买入 1：2024-01-02 → 2024-01-03')
+    expect(successText).toContain('买入 2：2024-01-03 → 2024-01-04')
     expect(successText).toContain('卖出：2024-01-04 → 2024-01-05')
     expect(tree.root.findAllByType('g').filter(group =>
       group.props.role === 'button' && String(group.props['aria-label']).startsWith('交易 1 ')
-    )).toHaveLength(4)
+    )).toHaveLength(6)
 
     const tradeRow = tree.root.findAllByType('tr').filter(row =>
-      renderedText(row).includes('买入：2024-01-02 → 2024-01-03')
+      renderedText(row).includes('买入 1：2024-01-02 → 2024-01-03')
     )[0]
     tradeRow.props.onClick()
     expect(page.state.selectedReplayTradeIndex).toBe(0)
     expect(page.state.selectedDate).toBe('2024-01-02')
     expect(tree.root.findAllByType('tr').some(row =>
-      renderedText(row).includes('买入：2024-01-02 → 2024-01-03') && row.props['aria-selected'] === true
+      renderedText(row).includes('买入 1：2024-01-02 → 2024-01-03') && row.props['aria-selected'] === true
     )).toBe(true)
 
     const buyExecutionMarker = tree.root.findAllByType('g').filter(group =>
-      group.props.role === 'button' && group.props['aria-label'] === '交易 1 买入成交日 2024-01-03；选择以定位交易明细'
+      group.props.role === 'button' && group.props['aria-label'] === '交易 1 第1次买入成交日 2024-01-03；选择以定位交易明细'
     )[0]
     buyExecutionMarker.props.onClick({ stopPropagation: jest.fn() })
     expect(page.state.selectedReplayTradeIndex).toBe(0)
@@ -1040,7 +1073,7 @@ describe('manual as-of replay page', () => {
     expect(replayQuotes.map((quote: ManualQuote) => quote.date)).toEqual(['2024-01-01', '2024-01-04'])
     expect(replayQuotes.every((quote: ManualQuote) => quote.date <= '2024-01-07')).toBe(true)
     expect(replayRange).toEqual({ startDate: '2024-01-01', endDate: '2024-01-07' })
-    expect(validation.standardizedSequence.trades.map((trade: any) => trade.entrySignal.id)).toEqual([1])
+    expect(validation.standardizedSequence.trades.map((trade: any) => trade.entrySignals[0].id)).toEqual([1])
     expect(JSON.stringify(validation)).not.toContain('2024-01-08')
 
     tree.unmount()

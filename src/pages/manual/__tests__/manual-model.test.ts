@@ -169,7 +169,7 @@ describe('manual signal sequence validation', () => {
       issues: [],
       standardizedSequence: {
         trades: [{
-          entrySignal: { id: 1, date: '2024-01-02', type: 'buy' },
+          entrySignals: [{ id: 1, date: '2024-01-02', type: 'buy' }],
           exitSignal: { id: 2, date: '2024-01-04', type: 'sell' },
           status: 'closed'
         }],
@@ -193,18 +193,29 @@ describe('manual signal sequence validation', () => {
     expect(result.standardizedSequence).toBeNull()
   })
 
-  it('marks a second buy while a long position is open', () => {
+  it('accumulates repeated buys into one position cycle that a sell closes once', () => {
     const result = validateManualSignalSequence([
       { id: 1, date: '2024-01-02', type: 'buy' },
       { id: 2, date: '2024-01-03', type: 'buy' },
-      { id: 3, date: '2024-01-04', type: 'sell' }
+      { id: 3, date: '2024-01-04', type: 'buy' },
+      { id: 4, date: '2024-01-05', type: 'sell' }
     ])
 
-    expect(result.issues).toEqual([expect.objectContaining({
-      signalId: 2,
-      code: 'buy-while-holding'
-    })])
-    expect(result.standardizedSequence).toBeNull()
+    expect(result.isValid).toBe(true)
+    expect(result.issues).toEqual([])
+    expect(result.standardizedSequence).toEqual({
+      trades: [{
+        entrySignals: [
+          { id: 1, date: '2024-01-02', type: 'buy' },
+          { id: 2, date: '2024-01-03', type: 'buy' },
+          { id: 3, date: '2024-01-04', type: 'buy' }
+        ],
+        exitSignal: { id: 4, date: '2024-01-05', type: 'sell' },
+        status: 'closed'
+      }],
+      endingPositionStatus: 'flat',
+      endDate: null
+    })
   })
 
   it('marks a consecutive sell after a completed trade', () => {
@@ -219,6 +230,37 @@ describe('manual signal sequence validation', () => {
       code: 'sell-while-flat'
     })])
     expect(result.standardizedSequence).toBeNull()
+  })
+
+  it('starts a new position cycle after the previous add-on position is fully sold', () => {
+    const result = validateManualSignalSequence([
+      { id: 1, date: '2024-01-02', type: 'buy' },
+      { id: 2, date: '2024-01-03', type: 'buy' },
+      { id: 3, date: '2024-01-04', type: 'sell' },
+      { id: 4, date: '2024-01-05', type: 'buy' },
+      { id: 5, date: '2024-01-06', type: 'buy' },
+      { id: 6, date: '2024-01-07', type: 'sell' }
+    ])
+
+    expect(result.isValid).toBe(true)
+    expect(result.standardizedSequence!.trades).toEqual([
+      {
+        entrySignals: [
+          { id: 1, date: '2024-01-02', type: 'buy' },
+          { id: 2, date: '2024-01-03', type: 'buy' }
+        ],
+        exitSignal: { id: 3, date: '2024-01-04', type: 'sell' },
+        status: 'closed'
+      },
+      {
+        entrySignals: [
+          { id: 4, date: '2024-01-05', type: 'buy' },
+          { id: 5, date: '2024-01-06', type: 'buy' }
+        ],
+        exitSignal: { id: 6, date: '2024-01-07', type: 'sell' },
+        status: 'closed'
+      }
+    ])
   })
 
   it('rejects same-day opposing signals without guessing their order', () => {
@@ -249,7 +291,7 @@ describe('manual signal sequence validation', () => {
     expect(result.issues).toEqual([])
     expect(result.standardizedSequence).toEqual({
       trades: [{
-        entrySignal: { id: 11, date: '2024-01-02', type: 'buy' },
+        entrySignals: [{ id: 11, date: '2024-01-02', type: 'buy' }],
         exitSignal: null,
         status: 'open'
       }],
@@ -268,7 +310,7 @@ describe('manual signal sequence validation', () => {
     expect(validateManualSignalSequence(invalid).isValid).toBe(false)
     expect(validateManualSignalSequence(corrected).standardizedSequence).toEqual({
       trades: [{
-        entrySignal: { id: 1, date: '2024-01-02', type: 'buy' },
+        entrySignals: [{ id: 1, date: '2024-01-02', type: 'buy' }],
         exitSignal: { id: 2, date: '2024-01-03', type: 'sell' },
         status: 'closed'
       }],

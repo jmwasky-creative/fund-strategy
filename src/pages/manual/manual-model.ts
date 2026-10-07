@@ -25,7 +25,6 @@ export interface ManualSignal {
 
 export type ManualSequenceIssueCode =
   | 'sell-while-flat'
-  | 'buy-while-holding'
   | 'same-day-opposite-signals'
   | 'state-unknown-after-ambiguous-day'
 
@@ -41,13 +40,14 @@ export interface ManualSequenceValidation {
   standardizedSequence: StandardManualSequence | null
 }
 
+/** One position lifecycle: one or more entries followed by at most one full exit. */
 export interface StandardManualTrade {
-  entrySignal: ManualSignal
+  entrySignals: ManualSignal[]
   exitSignal: ManualSignal | null
   status: 'closed' | 'open'
 }
 
-/** Validated signal pairs only; this contract contains no fills or valuation. */
+/** Validated position cycles only; this contract contains no fills or valuation. */
 export interface StandardManualSequence {
   trades: StandardManualTrade[]
   endingPositionStatus: 'flat' | 'open'
@@ -66,7 +66,8 @@ export const sortManualSignals = (signals: ManualSignal[]): ManualSignal[] => si
   .sort((left, right) => left.date.localeCompare(right.date) || left.id - right.id)
 
 /**
- * Validate a long-only, single-open-position signal sequence without changing its input.
+ * Validate a long-only signal sequence without changing its input.
+ * Buys accumulate in the current position; each sell closes that entire position.
  * Opposing signals on one day are rejected; an open position at the end is valid and explicit.
  */
 export const validateManualSignalSequence = (
@@ -76,7 +77,7 @@ export const validateManualSignalSequence = (
   const orderedSignals = sortManualSignals(signals)
   const issues: ManualSequenceIssue[] = []
   const trades: StandardManualTrade[] = []
-  let openSignal: ManualSignal | null = null
+  let openSignals: ManualSignal[] = []
   let index = 0
 
   while (index < orderedSignals.length) {
@@ -105,30 +106,22 @@ export const validateManualSignalSequence = (
 
     dateSignals.forEach(signal => {
       if (signal.type === 'buy') {
-        if (openSignal) {
-          issues.push({
-            signalId: signal.id,
-            code: 'buy-while-holding',
-            message: `买入点 ${signal.date} 时已有未平仓多头；首版不支持重复买入或加仓。`
-          })
-        } else {
-          openSignal = signal
-        }
-      } else if (!openSignal) {
+        openSignals.push(signal)
+      } else if (openSignals.length === 0) {
         issues.push({
           signalId: signal.id,
           code: 'sell-while-flat',
           message: `卖出点 ${signal.date} 发生时为空仓；不能在没有对应买入持仓时卖出。`
         })
       } else {
-        trades.push({ entrySignal: openSignal, exitSignal: signal, status: 'closed' })
-        openSignal = null
+        trades.push({ entrySignals: openSignals, exitSignal: signal, status: 'closed' })
+        openSignals = []
       }
     })
   }
 
-  if (!issues.length && openSignal) {
-    trades.push({ entrySignal: openSignal, exitSignal: null, status: 'open' })
+  if (!issues.length && openSignals.length > 0) {
+    trades.push({ entrySignals: openSignals, exitSignal: null, status: 'open' })
   }
 
   const isValid = issues.length === 0
@@ -137,7 +130,7 @@ export const validateManualSignalSequence = (
     issues,
     standardizedSequence: isValid ? {
       trades,
-      endingPositionStatus: openSignal ? 'open' : 'flat',
+      endingPositionStatus: openSignals.length > 0 ? 'open' : 'flat',
       endDate: endDate || null
     } : null
   }

@@ -56,7 +56,7 @@ describe('manual as-of replay model', () => {
     const snapshot = createManualAsOfSnapshot(quotes, signals, query, '2024-01-11')
     expect(snapshot.quotes.map(quote => quote.date)).toEqual(['2024-01-05', '2024-01-08', '2024-01-11'])
     expect(snapshot.signals.map(signal => signal.id)).toEqual([1])
-    expect(snapshot.sequenceValidation.standardizedSequence!.trades.map(trade => trade.entrySignal.id)).toEqual([1])
+    expect(snapshot.sequenceValidation.standardizedSequence!.trades.map(trade => trade.entrySignals[0].id)).toEqual([1])
     expect(snapshot.asOfDate).toBe('2024-01-11')
   })
 
@@ -68,6 +68,22 @@ describe('manual as-of replay model', () => {
     expect(after.quotes.map(quote => quote.date)).toEqual(['2024-01-05', '2024-01-08', '2024-01-11', '2024-01-12'])
     expect(after.signals.map(signal => signal.id)).toEqual([1, 2])
     expect(after.sequenceValidation.standardizedSequence!.trades[0].exitSignal!.id).toBe(2)
+  })
+
+  it('keeps a future add-on buy out of the current position cycle until its as-of date is revealed', () => {
+    const addOnSignals: ManualSignal[] = [
+      { id: 1, date: '2024-01-05', type: 'buy' },
+      { id: 2, date: '2024-01-12', type: 'buy' },
+      { id: 3, date: '2024-01-19', type: 'sell' }
+    ]
+    const before = createManualAsOfSnapshot(quotes, addOnSignals, query, '2024-01-11')
+    const after = createManualAsOfSnapshot(quotes, addOnSignals, query, '2024-01-18')
+
+    expect(before.signals.map(signal => signal.id)).toEqual([1])
+    expect(before.sequenceValidation.standardizedSequence!.trades[0].entrySignals.map(signal => signal.id)).toEqual([1])
+    expect(after.signals.map(signal => signal.id)).toEqual([1, 2])
+    expect(after.sequenceValidation.standardizedSequence!.trades[0].entrySignals.map(signal => signal.id)).toEqual([1, 2])
+    expect(after.quotes.every(quote => quote.date <= after.asOfDate)).toBe(true)
   })
 
   it('resolves execution dates only from NAV already visible in the current as-of snapshot', () => {
