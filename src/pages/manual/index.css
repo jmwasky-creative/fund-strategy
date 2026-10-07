@@ -306,17 +306,6 @@
   vector-effect: non-scaling-stroke;
 }
 
-.hoverTooltip {
-  fill: #172554;
-  opacity: 0.94;
-}
-
-.hoverTooltipText {
-  fill: #fff;
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .quotePoint {
   fill: #3157a4;
   stroke: #fff;
@@ -394,13 +383,24 @@
   background: #cf1322;
 }
 
-.selectedQuote {
-  min-height: 28px;
-  margin: 10px 0 14px;
+.chartReadout {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border: 1px solid #dbe3ef;
+  border-radius: 4px;
+  background: #f5f8fc;
   color: #4d5664;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
-.selectedQuote strong {
+.chartReadout strong {
   color: #172554;
 }
 
@@ -561,6 +561,12 @@
 
   .chart {
     min-height: 190px;
+  }
+
+  .chartReadout {
+    min-height: 38px;
+    padding: 7px 9px;
+    font-size: 12px;
   }
 
   .signalActions > button {

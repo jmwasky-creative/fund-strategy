@@ -377,6 +377,9 @@ describe('manual point-mode chart workflow', () => {
 
     const chart = tree.root.findAllByType('svg').filter(svg => svg.props['aria-label'])[0]
     const chartSvg = createChartSvg()
+    const chartReadout = () => tree.root.findAllByType('div').filter(node =>
+      node.props.role === 'status' && node.props['aria-label'] !== undefined
+    )[0]
     const quotePoint = () => tree.root.findAllByType('circle').filter(circle =>
       typeof circle.props['aria-label'] === 'string'
         && circle.props['aria-label'].includes('2024-01-04')
@@ -413,28 +416,33 @@ describe('manual point-mode chart workflow', () => {
     expect(page.state.selectedDate).toBe('2024-01-01')
 
     chart.props.onMouseMove({ currentTarget: chartSvg, clientX: quotePoint().props.cx, clientY: -12000 })
-    expect(renderedText(tree.root)).toContain('2024-01-04 · 单位净值 1.0400')
+    expect(chartReadout().props['aria-label']).toBe('当前定位实际交易日：2024-01-04，单位净值 1.0400')
+    expect(renderedText(chartReadout())).toContain('2024-01-04　单位净值：1.0400')
+    expect(renderedText(chart)).not.toContain('2024-01-04 · 单位净值 1.0400')
     expect(page.state.selectedDate).toBe('2024-01-01')
     expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(false)
-    expect(tree.root.findAllByType('g').some(group =>
-      group.props.role === 'status' && String(group.props['aria-label']).includes('2024-01-04')
-    )).toBe(true)
+    chart.props.onMouseLeave()
 
     chart.props.onClick(clickEvent())
     expect(page.state.signals).toEqual([])
     expect(page.state.selectedDate).toBe('2024-01-04')
     expect(renderedText(tree.root)).toContain('2024-01-04　单位净值：1.0400')
     expect(buttonByText(tree, '确认买入信号').props.disabled).toBe(false)
-    const selectedReadout = tree.root.findAllByType('g').filter(group =>
-      group.props.role === 'status' && String(group.props['aria-label']).startsWith('已选真实净值：2024-01-04')
+    expect(chartReadout().props['aria-label']).toBe('当前定位实际交易日：2024-01-04，单位净值 1.0400')
+    const selectedCrosshair = tree.root.findAllByType('line').filter(line =>
+      line.props.x1 === realPoint.props.cx
+        && line.props.x2 === realPoint.props.cx
+        && line.props.y1 !== line.props.y2
     )[0]
-    const selectedCrosshair = selectedReadout.findByType('line')
     expect(selectedCrosshair.props.x1).toBe(realPoint.props.cx)
     expect(selectedCrosshair.props.x2).toBe(realPoint.props.cx)
     chart.props.onMouseMove({ currentTarget: chartSvg, clientX: firstPoint.props.cx, clientY: 12000 })
     expect(page.state.hoveredDate).toBe('2024-01-01')
     expect(page.state.selectedDate).toBe('2024-01-04')
     expect(page.state.latchedQuote).toEqual({ date: '2024-01-04', val: 1.04 })
+    expect(chartReadout().props['aria-label']).toBe('当前定位实际交易日：2024-01-01，单位净值 1.0000')
+    chart.props.onMouseLeave()
+    expect(chartReadout().props['aria-label']).toBe('当前定位实际交易日：2024-01-04，单位净值 1.0400')
     buttonByText(tree, '确认买入信号').props.onClick()
     expect(page.state.signals.map((signal: any) => [signal.date, signal.type])).toEqual([['2024-01-04', 'buy']])
     expect(page.state.selectedDate).toBe('2024-01-04')
@@ -483,6 +491,78 @@ describe('manual point-mode chart workflow', () => {
     expect(page.state.signals).toEqual([])
     buttonByText(tree, '撤销最近一次点位操作').props.onClick()
     expect(page.state.signals.map((signal: any) => signal.date)).toEqual(['2024-01-04'])
+
+    tree.unmount()
+  })
+
+  it('shows an empty state instead of stale or as-of-hidden NAV values when selection is invalid', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const quotes: ManualQuote[] = [
+      { date: '2024-01-01', val: 1.00 },
+      { date: '2024-01-04', val: 1.04 },
+      { date: '2024-01-08', val: 1.08 }
+    ]
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-01', endDate: '2024-01-12' },
+      historyQuotes: quotes,
+      quotes: quotes.slice(0, 2),
+      asOfDate: '2024-01-07',
+      selectedDate: '2024-01-08',
+      latchedQuote: quotes[2],
+      selectionSource: 'chart',
+      hoveredDate: '2024-01-08'
+    })
+
+    const chartReadout = () => tree.root.findAllByType('div').filter(node =>
+      node.props.role === 'status' && node.props['aria-label'] !== undefined
+    )[0]
+    expect(chartReadout().props['aria-label']).toBe('请先在净值图上选择一个点位。')
+    expect(renderedText(tree.root)).not.toContain('2024-01-08')
+
+    page.setState({ selectedDate: '', latchedQuote: null, selectionSource: null, hoveredDate: '2024-01-04' })
+    expect(chartReadout().props['aria-label']).toBe('当前定位实际交易日：2024-01-04，单位净值 1.0400')
+    page.setState({ hoveredDate: '' })
+    expect(chartReadout().props['aria-label']).toBe('请先在净值图上选择一个点位。')
+
+    tree.unmount()
+  })
+
+  it('keeps the chart readout visible with zero as-of NAVs and reveals future NAV only after advancing', () => {
+    const tree = renderer.create(<ManualBacktestPage />)
+    const page = tree.getInstance() as any
+    const futureQuote: ManualQuote = { date: '2024-01-12', val: 9.99 }
+    page.setState({
+      activeQuery: { fundCode: '260108', startDate: '2024-01-01', endDate: '2024-01-31' },
+      historyQuotes: [futureQuote],
+      quotes: [],
+      asOfDate: '2024-01-07',
+      signals: [],
+      selectedDate: '',
+      latchedQuote: null,
+      selectionSource: null,
+      hoveredDate: ''
+    })
+
+    const chartReadout = () => tree.root.findAllByType('div').filter(node =>
+      node.props.role === 'status' && node.props['aria-label'] !== undefined
+    )[0]
+    const chartSvgs = () => tree.root.findAllByType('svg').filter(svg => svg.props['aria-label'])
+
+    expect(chartReadout()).toBeTruthy()
+    expect(chartReadout().props['aria-label']).toBe('请先在净值图上选择一个点位。')
+    expect(renderedText(chartReadout())).toContain('请先在净值图上选择一个点位。')
+    expect(renderedText(tree.root)).toContain('2024-01-07')
+    expect(buttonByText(tree, '下一周').props.disabled).toBe(false)
+    expect(chartSvgs()).toHaveLength(0)
+    expect(JSON.stringify(tree.toJSON())).not.toContain('2024-01-12')
+    expect(JSON.stringify(tree.toJSON())).not.toContain('9.9900')
+
+    buttonByText(tree, '下一周').props.onClick()
+    expect(page.state.asOfDate).toBe('2024-01-14')
+    expect(chartSvgs()).toHaveLength(1)
+    expect(renderedText(tree.root)).toContain('2024-01-12')
+    expect(JSON.stringify(tree.toJSON())).toContain('9.9900')
 
     tree.unmount()
   })
