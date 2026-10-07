@@ -7,13 +7,19 @@ import {
 } from '../manual-results-model'
 
 const makeTrade = (overrides: Partial<ManualReplayTrade> = {}): ManualReplayTrade => ({
-  entrySignalDate: '2024-01-01',
-  entryExecutionDate: '2024-01-02',
-  entryMarketNav: 1,
-  entryFillNav: 1.01,
+  entryFills: [{
+    signalId: 1,
+    signalDate: '2024-01-01',
+    executionDate: '2024-01-02',
+    marketNav: 1,
+    fillNav: 1.01,
+    notional: 500,
+    fee: 1,
+    shares: 500 / 1.01
+  }],
   entryNotional: 500,
   entryFee: 1,
-  shares: 495.049505,
+  shares: 500 / 1.01,
   exitSignalDate: null,
   exitExecutionDate: null,
   exitMarketNav: null,
@@ -58,8 +64,20 @@ describe('manual replay results model', () => {
   it('calculates return from initial cash and ending assets, drawdown from daily total assets, and win rate only from closed trades', () => {
     const result = makeResult([
       makeTrade({ status: 'closed', exitSignalDate: '2024-01-02', exitExecutionDate: '2024-01-03', exitMarketNav: 1.1, exitFillNav: 1.09, exitNotional: 540, exitFee: 2, realizedProfit: 39 }),
-      makeTrade({ entrySignalDate: '2024-01-03', entryExecutionDate: '2024-01-04', status: 'closed', exitSignalDate: '2024-01-04', exitExecutionDate: '2024-01-05', exitMarketNav: 0.9, exitFillNav: 0.9, exitNotional: 400, exitFee: 0, realizedProfit: -20 }),
-      makeTrade({ entrySignalDate: '2024-01-05', entryExecutionDate: '2024-01-06', status: 'open' })
+      makeTrade({
+        entryFills: [{ signalId: 2, signalDate: '2024-01-03', executionDate: '2024-01-04', marketNav: 1, fillNav: 1, notional: 500, fee: 0, shares: 500 }],
+        entryNotional: 500,
+        entryFee: 0,
+        status: 'closed',
+        exitSignalDate: '2024-01-04',
+        exitExecutionDate: '2024-01-05',
+        exitMarketNav: 0.9,
+        exitFillNav: 0.9,
+        exitNotional: 400,
+        exitFee: 0,
+        realizedProfit: -20
+      }),
+      makeTrade({ status: 'open' })
     ])
 
     expect(calculateManualReplayMetrics(result)).toEqual({
@@ -80,10 +98,16 @@ describe('manual replay results model', () => {
     expect(metrics.winRatePercent).toBeNull()
   })
 
-  it('keeps entry and exit signal dates distinct from next-NAV execution dates and shades the actual holding interval', () => {
+  it('keeps every entry signal and fill distinct while shading one position interval through its full exit', () => {
     const closed = makeTrade({
-      exitSignalDate: '2024-01-03',
-      exitExecutionDate: '2024-01-04',
+      entryFills: [
+        { signalId: 1, signalDate: '2024-01-01', executionDate: '2024-01-02', marketNav: 1, fillNav: 1.01, notional: 500, fee: 1, shares: 495.049505 },
+        { signalId: 2, signalDate: '2024-01-02', executionDate: '2024-01-03', marketNav: 1.1, fillNav: 1.111, notional: 400, fee: 0.8, shares: 360.036004 }
+      ],
+      entryNotional: 900,
+      entryFee: 1.8,
+      exitSignalDate: '2024-01-04',
+      exitExecutionDate: '2024-01-05',
       exitMarketNav: 1.2,
       exitFillNav: 1.188,
       exitNotional: 600,
@@ -92,26 +116,27 @@ describe('manual replay results model', () => {
       status: 'closed'
     })
     const open = makeTrade({
-      entrySignalDate: '2024-01-04',
-      entryExecutionDate: '2024-01-05',
+      entryFills: [{ signalId: 3, signalDate: '2024-01-05', executionDate: '2024-01-06', marketNav: 1.1, fillNav: 1.1, notional: 500, fee: 0, shares: 500 / 1.1 }],
       status: 'open'
     })
     const result = makeResult([closed, open])
     result.summary.lastNavDate = '2024-01-06'
 
     expect(getManualReplayChartMarkers([closed])).toEqual([
-      { tradeIndex: 0, kind: 'entry-signal', side: 'buy', date: '2024-01-01' },
-      { tradeIndex: 0, kind: 'entry-execution', side: 'buy', date: '2024-01-02' },
-      { tradeIndex: 0, kind: 'exit-signal', side: 'sell', date: '2024-01-03' },
-      { tradeIndex: 0, kind: 'exit-execution', side: 'sell', date: '2024-01-04' }
+      { tradeIndex: 0, entryIndex: 0, kind: 'entry-signal', side: 'buy', date: '2024-01-01' },
+      { tradeIndex: 0, entryIndex: 0, kind: 'entry-execution', side: 'buy', date: '2024-01-02' },
+      { tradeIndex: 0, entryIndex: 1, kind: 'entry-signal', side: 'buy', date: '2024-01-02' },
+      { tradeIndex: 0, entryIndex: 1, kind: 'entry-execution', side: 'buy', date: '2024-01-03' },
+      { tradeIndex: 0, kind: 'exit-signal', side: 'sell', date: '2024-01-04' },
+      { tradeIndex: 0, kind: 'exit-execution', side: 'sell', date: '2024-01-05' }
     ])
     expect(getManualReplayHoldingIntervals(result)).toEqual([
-      { tradeIndex: 0, startDate: '2024-01-02', endDate: '2024-01-04', isOpen: false },
-      { tradeIndex: 1, startDate: '2024-01-05', endDate: '2024-01-06', isOpen: true }
+      { tradeIndex: 0, startDate: '2024-01-02', endDate: '2024-01-05', isOpen: false },
+      { tradeIndex: 1, startDate: '2024-01-06', endDate: '2024-01-06', isOpen: true }
     ])
   })
 
-  it('derives explicit cash, position and fee/slippage-adjusted fill movements from ledger fields', () => {
+  it('derives entry and exit movements from actual NAVs, fills, fees and each buy fill separately', () => {
     const movements = getManualReplayTradeMovements(makeTrade({
       exitSignalDate: '2024-01-03',
       exitExecutionDate: '2024-01-04',
@@ -131,5 +156,22 @@ describe('manual replay results model', () => {
     expect(movements.entrySlippageRatePercent).toBeCloseTo(1, 8)
     expect(movements.exitSlippageAmount).toBeCloseTo(600 / 1.188 * 0.012, 8)
     expect(movements.exitSlippageRatePercent).toBeCloseTo(1, 8)
+  })
+
+  it('aggregates cash, shares and slippage across multiple independently booked buys', () => {
+    const trade = makeTrade({
+      entryFills: [
+        { signalId: 1, signalDate: '2024-01-01', executionDate: '2024-01-02', marketNav: 1, fillNav: 1.01, notional: 500, fee: 5, shares: 500 / 1.01 },
+        { signalId: 2, signalDate: '2024-01-03', executionDate: '2024-01-04', marketNav: 1.2, fillNav: 1.212, notional: 400, fee: 4, shares: 400 / 1.212 }
+      ],
+      entryNotional: 900,
+      entryFee: 9
+    })
+    const movements = getManualReplayTradeMovements(trade)
+
+    expect(movements.entryCashChange).toBe(-909)
+    expect(movements.entryPositionChange).toBeCloseTo(500 / 1.01 + 400 / 1.212, 8)
+    expect(movements.entrySlippageAmount).toBeCloseTo((1.01 - 1) * 500 / 1.01 + (1.212 - 1.2) * 400 / 1.212, 8)
+    expect(movements.entrySlippageRatePercent).toBeCloseTo(1, 8)
   })
 })

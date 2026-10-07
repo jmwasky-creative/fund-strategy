@@ -21,11 +21,20 @@ export interface ManualReplayConfig {
   sellSlippageRatePercent: number
 }
 
+export interface ManualReplayEntryFill {
+  signalId: number
+  signalDate: string
+  executionDate: string
+  marketNav: number
+  fillNav: number
+  notional: number
+  fee: number
+  shares: number
+}
+
+/** One position lifecycle, with each buy recorded separately and at most one full exit. */
 export interface ManualReplayTrade {
-  entrySignalDate: string
-  entryExecutionDate: string
-  entryMarketNav: number
-  entryFillNav: number
+  entryFills: ManualReplayEntryFill[]
   entryNotional: number
   entryFee: number
   shares: number
@@ -171,38 +180,47 @@ const assertSequence = (
   let previousExitDate: string | null = null
   let openTradeCount = 0
   sequence.trades.forEach((trade, index) => {
-    const entry = trade && trade.entrySignal
-    if (!entry || !Number.isFinite(entry.id) || !isCalendarDate(entry.date) || entry.type !== 'buy') {
-      fail(`第 ${index + 1} 笔交易缺少有效买入信号。`)
+    const entrySignals = trade && trade.entrySignals
+    if (!Array.isArray(entrySignals) || entrySignals.length === 0) {
+      fail(`第 ${index + 1} 笔持仓周期缺少有效买入信号。`)
     }
-    if (entry.date < range.startDate || entry.date > range.endDate) {
-      fail(`${entry.date} 的买入信号不在所选区间内。`)
-    }
-    if (previousExitDate && entry.date <= previousExitDate) {
-      fail(`${entry.date} 的买入信号与前一笔卖出日期冲突，不能推断交易顺序。`)
-    }
+    entrySignals.forEach((entry, entryIndex) => {
+      if (!entry || !Number.isFinite(entry.id) || !isCalendarDate(entry.date) || entry.type !== 'buy') {
+        fail(`第 ${index + 1} 笔持仓周期的第 ${entryIndex + 1} 次买入信号无效。`)
+      }
+      if (entry.date < range.startDate || entry.date > range.endDate) {
+        fail(`${entry.date} 的买入信号不在所选区间内。`)
+      }
+      if (entryIndex > 0 && entry.date < entrySignals[entryIndex - 1].date) {
+        fail(`${entry.date} 的追加买入信号日期顺序无效。`)
+      }
+      if (entryIndex === 0 && previousExitDate && entry.date <= previousExitDate) {
+        fail(`${entry.date} 的买入信号与前一笔卖出日期冲突，不能推断交易顺序。`)
+      }
+    })
+    const lastEntry = entrySignals[entrySignals.length - 1] as ManualSignal
     if (trade.status === 'closed') {
       const exit = trade.exitSignal
       if (!exit || !Number.isFinite(exit.id) || !isCalendarDate(exit.date) || exit.type !== 'sell') {
-        fail(`${entry.date} 的已平仓交易缺少有效卖出信号。`)
+        fail(`${lastEntry.date} 的已平仓持仓周期缺少有效卖出信号。`)
       }
       const validExit = exit as ManualSignal
-      if (validExit.date <= entry.date || validExit.date > range.endDate) {
+      if (validExit.date <= lastEntry.date || validExit.date > range.endDate) {
         fail(`${validExit.date} 的卖出信号日期不晚于买入或超出所选区间。`)
       }
       previousExitDate = validExit.date
     } else if (trade.status === 'open' && trade.exitSignal === null) {
       openTradeCount += 1
       if (index !== sequence.trades.length - 1) {
-        fail('未平仓交易后仍有其他交易；#3 标准序列状态不一致。')
+        fail('未平仓周期后仍有其他交易；#3 标准序列状态不一致。')
       }
     } else {
-      fail(`${entry.date} 的交易状态与退出信号不一致。`)
+      fail(`${lastEntry.date} 的持仓周期状态与退出信号不一致。`)
     }
   })
   if (openTradeCount > 1
     || (sequence.endingPositionStatus === 'open') !== (openTradeCount === 1)) {
-    fail('#3 标准序列的期末持仓状态与交易列表不一致。')
+    fail('#3 标准序列的期末持仓状态与持仓周期列表不一致。')
   }
   return sequence.trades
 }
@@ -269,13 +287,15 @@ function* createManualReplaySteps(
   const sourceTrades = assertSequence(validation, range)
   const schedule: Record<string, ScheduledOrder[]> = {}
   sourceTrades.forEach((trade, index) => {
-    scheduleSignal(trade.entrySignal, index, 'buy', quotes, range, schedule)
+    trade.entrySignals.forEach(signal => scheduleSignal(signal, index, 'buy', quotes, range, schedule))
     if (trade.exitSignal) {
       scheduleSignal(trade.exitSignal, index, 'sell', quotes, range, schedule)
     }
   })
   Object.keys(schedule).forEach(date => {
-    if (schedule[date].length > 1) {
+    const sameDayBuys = schedule[date].length > 1
+      && schedule[date].every(order => order.side === 'buy' && order.signal.date === schedule[date][0].signal.date)
+    if (schedule[date].length > 1 && !sameDayBuys) {
       fail(`${date} 有多个信号映射到同一个下一可用净值日；成交先后无法由行情确定，请调整信号日期。`)
     }
   })
@@ -287,7 +307,7 @@ function* createManualReplaySteps(
   let totalDividendReinvested = 0
   let completedTradeCount = 0
   const disclosures: string[] = [
-    `每次买入按本次显式输入的固定费前名义金额下单；卖出信号平掉单笔未平仓交易的全部份额。买卖费用 = 对应成交名义金额 × 显式输入费率，买入费用另计现金支出。`,
+    `每次买入按本次显式输入的固定费前名义金额单独记账，并累加到当前持仓；每个卖出信号以一笔成交清算当时累计的全部份额，不支持部分卖出。买卖费用 = 对应成交名义金额 × 显式输入费率，买入费用另计现金支出。`,
     `买入成交净值 = 当日净值 × (1 + 买入滑点率)；卖出成交净值 = 当日净值 × (1 - 卖出滑点率)。`,
     `信号在信号日后的下一条区间内有效净值成交；成交日期与信号日期分开记录。`,
     `仅将数据源 unitMoney 明确写为“每份……X元”的现金分红按每份现金金额确认，并按原策略公式 shares × (当日净值 + 每份红利) / 当日净值复投；事件金额/单位不明或类型无法识别时，持仓期间明确报错，空仓期间以警告披露且不调整持仓后继续；不推测。`,
@@ -295,11 +315,8 @@ function* createManualReplaySteps(
     `本结果为历史模拟，不会发送真实订单；红利复投的现金派发与再投入在同一净值日入账并抵销，期末现金余额不因复投而增加，复投金额单独记录。`
   ]
   const trades: ManualReplayTrade[] = sourceTrades.map(trade => ({
-    entrySignalDate: trade.entrySignal.date,
-    entryExecutionDate: '',
-    entryMarketNav: 0,
-    entryFillNav: 0,
-    entryNotional: config.buyAmount,
+    entryFills: [],
+    entryNotional: 0,
     entryFee: 0,
     shares: 0,
     exitSignalDate: trade.exitSignal ? trade.exitSignal.date : null,
@@ -375,8 +392,9 @@ function* createManualReplaySteps(
 
     orders.forEach(order => {
       if (order.side === 'buy') {
-        if (shares > 0 || activeTradeIndex !== null) {
-          fail(`${quote.date} 买入信号执行时已有持仓；拒绝加仓或重叠持仓。`)
+        if ((shares > 0 && activeTradeIndex === null)
+          || (activeTradeIndex !== null && activeTradeIndex !== order.tradeIndex)) {
+          fail(`${quote.date} 买入信号与当前持仓周期不一致；拒绝重叠持仓。`)
         }
         const fee = config.buyAmount * config.buyFeeRatePercent / 100
         const cashDebit = config.buyAmount + fee
@@ -387,14 +405,25 @@ function* createManualReplaySteps(
         if (!Number.isFinite(fillNav) || fillNav <= 0) {
           fail(`${quote.date} 买入成交净值无效。`)
         }
-        shares = config.buyAmount / fillNav
+        const entryShares = config.buyAmount / fillNav
+        shares += entryShares
         cash = Math.max(0, cash - cashDebit)
-        activeTradeIndex = order.tradeIndex
+        if (activeTradeIndex === null) {
+          activeTradeIndex = order.tradeIndex
+        }
         const trade = trades[order.tradeIndex]
-        trade.entryExecutionDate = quote.date
-        trade.entryMarketNav = quote.val
-        trade.entryFillNav = fillNav
-        trade.entryFee = fee
+        trade.entryFills.push({
+          signalId: order.signal.id,
+          signalDate: order.signal.date,
+          executionDate: quote.date,
+          marketNav: quote.val,
+          fillNav,
+          notional: config.buyAmount,
+          fee,
+          shares: entryShares
+        })
+        trade.entryNotional += config.buyAmount
+        trade.entryFee += fee
         trade.shares = shares
       } else {
         if (shares <= 0 || activeTradeIndex === null || activeTradeIndex !== order.tradeIndex) {

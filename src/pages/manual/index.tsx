@@ -269,7 +269,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     const sequence = validation.standardizedSequence
     if (sequence) {
       sequence.trades.filter(trade => trade.status === 'open').forEach(trade => {
-        openSignalIds.add(trade.entrySignal.id)
+        trade.entrySignals.forEach(signal => openSignalIds.add(signal.id))
       })
     }
     return openSignalIds
@@ -641,7 +641,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     if (!result || !result.trades[tradeIndex]) {
       return
     }
-    const selectedDate = date || result.trades[tradeIndex].entrySignalDate
+    const selectedDate = date || result.trades[tradeIndex].entryFills[0].signalDate
     const snapshot = this.getCurrentAsOfSnapshot()
     const quote = snapshot ? snapshot.quotes.find(item => item.date === selectedDate) : null
     this.setState({
@@ -965,10 +965,15 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
               const isSignal = marker.kind.indexOf('signal') >= 0
               const isBuy = marker.side === 'buy'
               const isTradeSelected = selectedReplayTradeIndex === marker.tradeIndex
+              const entryCount = replayResult && replayResult.trades[marker.tradeIndex]
+                ? replayResult.trades[marker.tradeIndex].entryFills.length
+                : 0
+              const entryNumber = marker.entryIndex === undefined || entryCount <= 1
+                ? '' : `第${marker.entryIndex + 1}次`
               const markerX = point.x + (markerIndex - (dateReplayMarkers.length - 1) / 2) * 9
               const markerY = Math.max(PLOT_TOP + 12, Math.min(PLOT_BOTTOM - 12, point.y + (isSignal ? -22 : 22)))
-              const markerLabel = marker.kind === 'entry-signal' ? '买入信号'
-                : marker.kind === 'entry-execution' ? '买入成交'
+              const markerLabel = marker.kind === 'entry-signal' ? `${entryNumber}买入信号`
+                : marker.kind === 'entry-execution' ? `${entryNumber}买入成交`
                   : marker.kind === 'exit-signal' ? '卖出信号' : '卖出成交'
               const markerClass = [
                 styles.replayTradeMarker,
@@ -977,7 +982,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
                 isTradeSelected ? styles.replayTradeMarkerSelected : ''
               ].filter(Boolean).join(' ')
               return <g
-                key={`${marker.kind}-${marker.tradeIndex}`}
+                key={`${marker.kind}-${marker.tradeIndex}-${marker.entryIndex === undefined ? 'exit' : marker.entryIndex}`}
                 role="button"
                 tabIndex={0}
                 aria-pressed={isTradeSelected}
@@ -1092,7 +1097,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
       ? '当前没有点位；添加、移除或撤销后会自动重新校验。'
       : openTradeCount > 0
         ? `信号序列合法；${openTradeCount} 笔持仓仍未平仓。这里只输出未平仓状态，不计算或声称期末估值；估值由独立回测引擎范围处理。`
-        : '当前点位符合多头单持仓顺序约束。'
+        : '当前点位符合多头单一持仓周期顺序约束；持仓期间可多次加仓，卖出信号全量清算。'
     const replayResultIsStale = Boolean(replayResult && (
       replayResultRevision !== replayInputRevision || replayStatus !== 'success'
     ))
@@ -1379,23 +1384,27 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
               <div><dt>最后有效净值</dt><dd>{replayResult.summary.lastNavDate} · {replayResult.summary.lastNav.toFixed(4)}</dd></div>
             </dl>
 
-            <h3>交易账本（信号日与成交日分列；选择行可定位图表）</h3>
+            <h3>交易账本（逐笔买入、单笔全量卖出；选择行可定位图表）</h3>
             {replayResult.trades.length === 0
               ? <p className={styles.emptyList}>没有交易信号；结果仅显示区间现金快照。</p>
               : <div className={styles.tableWrap}>
                 <table className={styles.replayTable}>
-                  <thead><tr><th>状态</th><th>买入类型：信号日 → 成交日</th><th>买入净值：市场 / 成交</th><th>卖出类型：信号日 → 成交日</th><th>卖出净值：市场 / 成交</th><th>费用 / 滑点金额</th><th>现金 / 持仓变化</th><th>交易盈亏</th><th>图表</th></tr></thead>
+                  <thead><tr><th>状态</th><th>逐笔买入：信号日 → 成交日</th><th>买入净值：市场 / 成交；金额 / 份额</th><th>卖出类型：信号日 → 成交日</th><th>卖出净值：市场 / 成交</th><th>费用 / 滑点金额</th><th>现金 / 持仓变化</th><th>交易盈亏</th><th>图表</th></tr></thead>
                   <tbody>{replayResult.trades.map((trade, index) => {
                     const movements = getManualReplayTradeMovements(trade)
                     return <tr
-                      key={`${trade.entrySignalDate}-${index}`}
+                      key={`${trade.entryFills[0].signalId}-${index}`}
                       className={selectedReplayTradeIndex === index ? styles.selectedRow : ''}
                       aria-selected={selectedReplayTradeIndex === index}
                       onClick={() => this.selectReplayTrade(index)}
                     >
                       <td>{trade.status === 'open' ? 'open / 未平仓' : 'closed / 已完成'}</td>
-                      <td>买入：{trade.entrySignalDate} → {trade.entryExecutionDate}</td>
-                      <td>{trade.entryMarketNav.toFixed(4)} / {trade.entryFillNav.toFixed(4)}</td>
+                      <td>{trade.entryFills.map((entry, entryIndex) => <div key={entry.signalId}>
+                        买入{trade.entryFills.length > 1 ? ` ${entryIndex + 1}` : ''}：{entry.signalDate} → {entry.executionDate}
+                      </div>)}</td>
+                      <td>{trade.entryFills.map((entry, entryIndex) => <div key={entry.signalId}>
+                        {entry.marketNav.toFixed(4)} / {entry.fillNav.toFixed(4)}；{entry.notional.toFixed(2)} 元 / {entry.shares.toFixed(6)} 份
+                      </div>)}</td>
                       <td>{trade.exitSignalDate
                         ? `卖出：${trade.exitSignalDate} → ${trade.exitExecutionDate || '—'}`
                         : '卖出：未平仓'}</td>

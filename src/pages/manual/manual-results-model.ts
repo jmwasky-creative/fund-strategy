@@ -28,6 +28,7 @@ export interface ManualReplayChartMarker {
   kind: ManualReplayChartMarkerKind
   side: 'buy' | 'sell'
   date: string
+  entryIndex?: number
 }
 
 export interface ManualReplayHoldingInterval {
@@ -82,10 +83,13 @@ export const calculateManualReplayMetrics = (result: ManualReplayResult): Manual
  * remain visible in the daily snapshots and are not guessed into these order fills.
  */
 export const getManualReplayTradeMovements = (trade: ManualReplayTrade): ManualReplayTradeMovements => {
-  const entryPositionChange = trade.entryFillNav > 0 ? trade.entryNotional / trade.entryFillNav : 0
-  const entrySlippageAmount = (trade.entryFillNav - trade.entryMarketNav) * entryPositionChange
-  const entrySlippageRatePercent = trade.entryMarketNav > 0
-    ? (trade.entryFillNav - trade.entryMarketNav) / trade.entryMarketNav * 100
+  const entryPositionChange = trade.entryFills.reduce((total, entry) => total + entry.shares, 0)
+  const entrySlippageAmount = trade.entryFills.reduce((total, entry) =>
+    total + (entry.fillNav - entry.marketNav) * entry.shares, 0)
+  const entrySlippageRatePercent = trade.entryNotional > 0
+    ? trade.entryFills.reduce((total, entry) => total + (entry.marketNav > 0
+      ? (entry.fillNav - entry.marketNav) / entry.marketNav * entry.notional
+      : 0), 0) / trade.entryNotional * 100
     : 0
   const hasExit = trade.exitNotional !== null && trade.exitFee !== null
     && trade.exitMarketNav !== null && trade.exitFillNav !== null && trade.exitFillNav > 0
@@ -113,10 +117,12 @@ export const getManualReplayTradeMovements = (trade: ManualReplayTrade): ManualR
 export const getManualReplayChartMarkers = (trades: ManualReplayTrade[]): ManualReplayChartMarker[] => {
   const markers: ManualReplayChartMarker[] = []
   trades.forEach((trade, tradeIndex) => {
-    markers.push({ tradeIndex, kind: 'entry-signal', side: 'buy', date: trade.entrySignalDate })
-    if (trade.entryExecutionDate) {
-      markers.push({ tradeIndex, kind: 'entry-execution', side: 'buy', date: trade.entryExecutionDate })
-    }
+    trade.entryFills.forEach((entry, entryIndex) => {
+      markers.push({ tradeIndex, entryIndex, kind: 'entry-signal', side: 'buy', date: entry.signalDate })
+      if (entry.executionDate) {
+        markers.push({ tradeIndex, entryIndex, kind: 'entry-execution', side: 'buy', date: entry.executionDate })
+      }
+    })
     if (trade.exitSignalDate) {
       markers.push({ tradeIndex, kind: 'exit-signal', side: 'sell', date: trade.exitSignalDate })
     }
@@ -131,7 +137,7 @@ export const getManualReplayChartMarkers = (trades: ManualReplayTrade[]): Manual
 export const getManualReplayHoldingIntervals = (result: ManualReplayResult): ManualReplayHoldingInterval[] => result.trades
   .map((trade, tradeIndex) => ({
     tradeIndex,
-    startDate: trade.entryExecutionDate,
+    startDate: trade.entryFills.length > 0 ? trade.entryFills[0].executionDate : '',
     endDate: trade.exitExecutionDate || result.summary.lastNavDate,
     isOpen: trade.status === 'open'
   }))

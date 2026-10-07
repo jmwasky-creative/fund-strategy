@@ -32,13 +32,13 @@ const valid = (trades: ManualSequenceValidation['standardizedSequence'] extends 
 })
 
 const oneClosedTrade = (buyDate: string, sellDate: string, endDate: string) => valid([{
-  entrySignal: signal(1, buyDate, 'buy'),
+  entrySignals: [signal(1, buyDate, 'buy')],
   exitSignal: signal(2, sellDate, 'sell'),
   status: 'closed' as 'closed'
 }], endDate)
 
 const oneOpenTrade = (buyDate: string, endDate: string) => valid([{
-  entrySignal: signal(1, buyDate, 'buy'),
+  entrySignals: [signal(1, buyDate, 'buy')],
   exitSignal: null,
   status: 'open' as 'open'
 }], endDate)
@@ -58,11 +58,13 @@ describe('manual replay engine', () => {
       config
     )
 
+    expect(result.trades[0].entryFills).toEqual([expect.objectContaining({
+      signalDate: '2024-01-01',
+      executionDate: '2024-01-02',
+      marketNav: 11,
+      fillNav: 11
+    })])
     expect(result.trades[0]).toMatchObject({
-      entrySignalDate: '2024-01-01',
-      entryExecutionDate: '2024-01-02',
-      entryMarketNav: 11,
-      entryFillNav: 11,
       exitSignalDate: '2024-01-03',
       exitExecutionDate: '2024-01-04',
       exitMarketNav: 10,
@@ -71,6 +73,110 @@ describe('manual replay engine', () => {
     expect(result.summary.completedTradeCount).toBe(1)
     expect(result.summary.openTradeCount).toBe(0)
     expect(result.dailySnapshots).toHaveLength(5)
+  })
+
+  it('books each add-on at its own next NAV and fully clears the accumulated shares in one sell fill', () => {
+    const validation = valid([{
+      entrySignals: [
+        signal(1, '2024-01-01', 'buy'),
+        signal(2, '2024-01-03', 'buy'),
+        signal(3, '2024-01-05', 'buy')
+      ],
+      exitSignal: signal(4, '2024-01-07', 'sell'),
+      status: 'closed'
+    }], '2024-01-09')
+    const result = runManualReplay(validation, quotes([
+      { date: '2024-01-01', val: 10 },
+      { date: '2024-01-02', val: 10 },
+      { date: '2024-01-03', val: 20 },
+      { date: '2024-01-04', val: 10 },
+      { date: '2024-01-05', val: 10 },
+      { date: '2024-01-06', val: 12 },
+      { date: '2024-01-07', val: 8 },
+      { date: '2024-01-08', val: 8 },
+      { date: '2024-01-09', val: 9 }
+    ]), { startDate: '2024-01-01', endDate: '2024-01-09' }, {
+      ...config,
+      initialCash: 3000,
+      buyFeeRatePercent: 1,
+      sellFeeRatePercent: 2,
+      buySlippageRatePercent: 10,
+      sellSlippageRatePercent: 5
+    })
+    const entryShares = [500 / 11, 500 / 11, 500 / 13.2]
+    const totalShares = entryShares.reduce((total, shares) => total + shares, 0)
+    const exitNotional = totalShares * 7.6
+    const exitFee = exitNotional * 0.02
+
+    expect(result.trades).toHaveLength(1)
+    expect(result.trades[0].entryFills.map(fill => [fill.signalDate, fill.executionDate, fill.marketNav, fill.notional, fill.fee])).toEqual([
+      ['2024-01-01', '2024-01-02', 10, 500, 5],
+      ['2024-01-03', '2024-01-04', 10, 500, 5],
+      ['2024-01-05', '2024-01-06', 12, 500, 5]
+    ])
+    expect(result.trades[0].entryFills[0].fillNav).toBeCloseTo(11, 10)
+    expect(result.trades[0].entryFills[1].fillNav).toBeCloseTo(11, 10)
+    expect(result.trades[0].entryFills[2].fillNav).toBeCloseTo(13.2, 10)
+    result.trades[0].entryFills.forEach((fill, index) => {
+      expect(fill.shares).toBeCloseTo(entryShares[index], 10)
+    })
+    expect(result.trades[0]).toMatchObject({
+      entryNotional: 1500,
+      entryFee: 15,
+      shares: totalShares,
+      exitSignalDate: '2024-01-07',
+      exitExecutionDate: '2024-01-08',
+      exitMarketNav: 8,
+      exitFillNav: 7.6,
+      status: 'closed'
+    })
+    expect(result.trades[0].exitNotional).toBeCloseTo(exitNotional, 10)
+    expect(result.trades[0].exitFee).toBeCloseTo(exitFee, 10)
+    expect(result.dailySnapshots[1]).toMatchObject({ cash: 2495, shares: entryShares[0], positionStatus: 'open' })
+    expect(result.dailySnapshots[3]).toMatchObject({ cash: 1990, shares: entryShares[0] + entryShares[1], positionStatus: 'open' })
+    expect(result.dailySnapshots[5].cash).toBe(1485)
+    expect(result.dailySnapshots[5].shares).toBeCloseTo(totalShares, 10)
+    expect(result.dailySnapshots[5].positionStatus).toBe('open')
+    expect(result.dailySnapshots[7].cash).toBeCloseTo(1485 + exitNotional - exitFee, 10)
+    expect(result.dailySnapshots[7]).toMatchObject({
+      shares: 0,
+      positionStatus: 'flat',
+      completedTradeCount: 1
+    })
+    expect(result.summary).toMatchObject({ completedTradeCount: 1, openTradeCount: 0, endingPositionStatus: 'flat' })
+    expect(result.disclosures.join(' ')).toContain('一笔成交清算当时累计的全部份额')
+  })
+
+  it('supports another add-on position cycle after the first cycle has been fully liquidated', () => {
+    const validation = valid([
+      {
+        entrySignals: [signal(1, '2024-01-01', 'buy'), signal(2, '2024-01-03', 'buy')],
+        exitSignal: signal(3, '2024-01-05', 'sell'),
+        status: 'closed'
+      },
+      {
+        entrySignals: [signal(4, '2024-01-07', 'buy'), signal(5, '2024-01-09', 'buy')],
+        exitSignal: signal(6, '2024-01-11', 'sell'),
+        status: 'closed'
+      }
+    ], '2024-01-13')
+    const replayQuotes = Array.from({ length: 13 }, (_item, index) => ({
+      date: new Date(Date.UTC(2024, 0, index + 1)).toISOString().slice(0, 10),
+      val: 10
+    }))
+    const result = runManualReplay(
+      validation,
+      replayQuotes,
+      { startDate: '2024-01-01', endDate: '2024-01-13' },
+      { ...config, initialCash: 2000 }
+    )
+
+    expect(result.trades).toHaveLength(2)
+    expect(result.trades.map(trade => trade.entryFills.length)).toEqual([2, 2])
+    expect(result.trades.map(trade => trade.exitNotional)).toEqual([1000, 1000])
+    expect(result.dailySnapshots[5]).toMatchObject({ cash: 2000, shares: 0, completedTradeCount: 1 })
+    expect(result.dailySnapshots[11]).toMatchObject({ cash: 2000, shares: 0, completedTradeCount: 2 })
+    expect(result.summary).toMatchObject({ completedTradeCount: 2, openTradeCount: 0, endingPositionStatus: 'flat' })
   })
 
   it('keeps fixed pre-fee notional, separate buy fee, and proportional slippage', () => {
@@ -93,7 +199,7 @@ describe('manual replay engine', () => {
       }
     )
 
-    expect(result.trades[0].entryFillNav).toBeCloseTo(11)
+    expect(result.trades[0].entryFills[0].fillNav).toBeCloseTo(11)
     expect(result.trades[0].entryNotional).toBe(500)
     expect(result.trades[0].entryFee).toBe(5)
     expect(result.trades[0].shares).toBeCloseTo(500 / 11)
@@ -125,6 +231,47 @@ describe('manual replay engine', () => {
       endingPositionStatus: 'open'
     })
     expect(result.disclosures.join(' ')).toContain('不计入已完成交易数')
+  })
+
+  it('values a terminal position after repeated buys at the last in-range NAV without inventing an exit', () => {
+    const validation = valid([{
+      entrySignals: [signal(1, '2024-01-01', 'buy'), signal(2, '2024-01-03', 'buy')],
+      exitSignal: null,
+      status: 'open'
+    }], '2024-01-06')
+    const shares = 500 / 10 + 500 / 11
+    const result = runManualReplay(validation, quotes([
+      { date: '2024-01-01', val: 10 },
+      { date: '2024-01-02', val: 10 },
+      { date: '2024-01-03', val: 20 },
+      { date: '2024-01-04', val: 11 },
+      { date: '2024-01-05', val: 12 }
+    ]), { startDate: '2024-01-01', endDate: '2024-01-06' }, config)
+
+    expect(result.trades).toHaveLength(1)
+    expect(result.trades[0].entryFills).toHaveLength(2)
+    expect(result.trades[0]).toMatchObject({
+      status: 'open',
+      exitSignalDate: null,
+      exitExecutionDate: null,
+      exitNotional: null,
+      realizedProfit: null,
+      currentValue: shares * 12,
+      shares
+    })
+    expect(result.summary).toMatchObject({
+      lastNavDate: '2024-01-05',
+      lastNav: 12,
+      endingShares: shares,
+      openPositionValue: shares * 12,
+      endingTotalAssets: 1000 - 1000 + shares * 12,
+      completedTradeCount: 0,
+      openTradeCount: 1,
+      endingPositionStatus: 'open'
+    })
+    expect(result.trades[0].exitNotional).toBeNull()
+    expect(result.disclosures.join(' ')).toContain('2024-01-05')
+    expect(result.disclosures.join(' ')).toContain('不合成为卖出')
   })
 
   it('accepts an empty valid sequence without making up trades or returns', () => {
@@ -168,11 +315,11 @@ describe('manual replay engine', () => {
       { startDate: '2024-01-05', endDate: '2024-01-09' },
       config
     )
-    expect(weekendTrade.trades[0].entryExecutionDate).toBe('2024-01-08')
+    expect(weekendTrade.trades[0].entryFills[0].executionDate).toBe('2024-01-08')
 
     const colliding = valid([
-      { entrySignal: signal(1, '2024-01-06', 'buy'), exitSignal: signal(2, '2024-01-07', 'sell'), status: 'closed' },
-      { entrySignal: signal(3, '2024-01-08', 'buy'), exitSignal: null, status: 'open' }
+      { entrySignals: [signal(1, '2024-01-06', 'buy')], exitSignal: signal(2, '2024-01-07', 'sell'), status: 'closed' },
+      { entrySignals: [signal(3, '2024-01-08', 'buy')], exitSignal: null, status: 'open' }
     ], '2024-01-09')
     expect(() => runManualReplay(colliding, quotes([
       { date: '2024-01-05', val: 10 },
@@ -223,10 +370,11 @@ describe('manual replay engine', () => {
     const dividendCash = sharesBeforeDividend * 0.1
 
     expect(result.trades[0]).toMatchObject({
-      status: 'open', entryNotional: 500, entryFee: 5, entryFillNav: 11,
+      status: 'open', entryNotional: 500, entryFee: 5,
       exitExecutionDate: null, realizedProfit: null, shares: reinvestedShares,
       currentValue: reinvestedShares * 10
     })
+    expect(result.trades[0].entryFills[0].fillNav).toBe(11)
     expect(result.dailySnapshots[2]).toMatchObject({
       cash: 495, shares: reinvestedShares,
       dividendReinvestmentAmount: dividendCash,
@@ -259,9 +407,11 @@ describe('manual replay engine', () => {
     const boughtShares = 500 / 9.9
 
     expect(result.trades[0]).toMatchObject({
-      entryExecutionDate: '2024-01-02', entryMarketNav: 9, entryFillNav: 9.9,
       entryNotional: 500, entryFee: 5, shares: boughtShares,
       currentValue: boughtShares * 9, status: 'open'
+    })
+    expect(result.trades[0].entryFills[0]).toMatchObject({
+      executionDate: '2024-01-02', marketNav: 9, fillNav: 9.9
     })
     expect(result.dailySnapshots[1]).toMatchObject({
       date: '2024-01-02', nav: 9, cash: 495, shares: boughtShares,
@@ -302,10 +452,10 @@ describe('manual replay engine', () => {
     const endingCash = 495 + exitNotional - exitFee
 
     expect(result.trades[0]).toMatchObject({
-      entryExecutionDate: '2024-01-02', entryFillNav: 11, entryFee: 5,
-      shares: postEventShares, exitExecutionDate: '2024-01-03',
+      entryFee: 5, shares: postEventShares, exitExecutionDate: '2024-01-03',
       exitMarketNav: 9, exitFillNav, exitNotional, exitFee, status: 'closed'
     })
+    expect(result.trades[0].entryFills[0]).toMatchObject({ executionDate: '2024-01-02', fillNav: 11 })
     expect(result.trades[0].realizedProfit!).toBeCloseTo(endingCash - 1000, 10)
     expect(result.dailySnapshots[2]).toMatchObject({
       date: '2024-01-03', nav: 9, cash: endingCash, shares: 0,
@@ -372,7 +522,7 @@ describe('manual replay engine', () => {
       config
     )
 
-    expect(result.trades[0].entryExecutionDate).toBe('2024-01-02')
+    expect(result.trades[0].entryFills[0].executionDate).toBe('2024-01-02')
     expect(result.dailySnapshots[1]).toMatchObject({
       date: '2024-01-02', cash: 500, shares: 500 / 9,
       positionValue: 500, positionStatus: 'open'
