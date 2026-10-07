@@ -837,12 +837,7 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     const plotted = plotManualHistory(quotes)
     const selectedPoint = selectedDate ? plotted.find(point => point.date === selectedDate) || null : null
     const hoveredPoint = hoveredDate ? plotted.find(point => point.date === hoveredDate) || null : null
-    const hoverTooltipX = hoveredPoint
-      ? Math.max(PLOT_LEFT, Math.min(hoveredPoint.x + 12, PLOT_RIGHT - 220))
-      : 0
-    const hoverTooltipY = hoveredPoint
-      ? Math.max(PLOT_TOP + 4, Math.min(hoveredPoint.y - 34, PLOT_BOTTOM - 30))
-      : 0
+    const readoutPoint = hoveredPoint || selectedPoint
     if (plotted.length === 0) {
       return null
     }
@@ -865,6 +860,18 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
     const openSignalIds = this.getOpenSignalIds(sequenceValidation)
 
     return <div className={styles.chartWrap}>
+      <div
+        className={styles.chartReadout}
+        role="status"
+        aria-live="polite"
+        aria-label={readoutPoint
+          ? `当前定位实际交易日：${readoutPoint.date}，单位净值 ${readoutPoint.val.toFixed(4)}`
+          : '请先在净值图上选择一个点位。'}
+      >
+        {readoutPoint
+          ? <span>当前定位实际交易日：<strong>{readoutPoint.date}</strong>　单位净值：<strong>{readoutPoint.val.toFixed(4)}</strong></span>
+          : <span>请先在净值图上选择一个点位。</span>}
+      </div>
       <svg
         className={styles.chart}
         viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
@@ -902,16 +909,12 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
         {plotted.length > 1
           ? <polyline points={pointsAttribute} className={styles.line} />
           : null}
-        {selectedPoint ? <g className={styles.selectedReadout} role="status" aria-label={`已选真实净值：${selectedPoint.date}，单位净值 ${selectedPoint.val.toFixed(4)}`} pointerEvents="none">
+        {selectedPoint ? <g className={styles.selectedReadout} aria-hidden="true" pointerEvents="none">
           <line x1={selectedPoint.x} y1={PLOT_TOP} x2={selectedPoint.x} y2={PLOT_BOTTOM} className={styles.selectedCrosshair} />
         </g> : null}
-        {hoveredPoint ? <g className={styles.hoverReadout} role="status" aria-label={`悬停真实净值：${hoveredPoint.date}，单位净值 ${hoveredPoint.val.toFixed(4)}`} pointerEvents="none">
+        {hoveredPoint ? <g className={styles.hoverReadout} aria-hidden="true" pointerEvents="none">
           <line x1={hoveredPoint.x} y1={PLOT_TOP} x2={hoveredPoint.x} y2={PLOT_BOTTOM} className={styles.crosshair} />
           <circle cx={hoveredPoint.x} cy={hoveredPoint.y} r={6} className={styles.hoveredPoint} />
-          <rect x={hoverTooltipX} y={hoverTooltipY} width={216} height={24} rx={3} className={styles.hoverTooltip} />
-          <text x={hoverTooltipX + 8} y={hoverTooltipY + 16} className={styles.hoverTooltipText}>
-            {hoveredPoint.date} · 单位净值 {hoveredPoint.val.toFixed(4)}
-          </text>
         </g> : null}
         {plotted.map(point => {
           const isSelected = selectedDate === point.date
@@ -1210,11 +1213,6 @@ export default class ManualBacktestPage extends Component<{}, ManualWorkspaceSta
           <p className={styles.asOfNotice}>按 7 个日历日逐步累计揭示历史净值；当前图表、信号和回测仅使用此截止日及之前的数据。此功能模拟历史当时可见数据，不承诺源 NAV 的实际发布时间或修订信息（NAV 数据可能后补）。</p>
           {quotes.length === 0 ? <p className={styles.chartSummary}>当前 as-of 窗口内暂无实际净值交易日；如仍有后续区间数据，可点击“下一周”继续揭示。</p> : null}
           {this.renderHistoryChart()}
-          <div className={styles.selectedQuote}>
-            {selectedQuote
-              ? <span>当前定位实际交易日：<strong>{selectedQuote.date}</strong>　单位净值：<strong>{selectedQuote.val.toFixed(4)}</strong></span>
-              : <span>请先在净值图上选择一个点位。</span>}
-          </div>
           <div className={styles.signalConfirm} role="group" aria-label="确认所选 NAV 点为买入或卖出信号">
             <strong>将当前选中 NAV 确认为信号</strong>
             <p className={styles.signalConfirmHint} role="status" aria-live="polite">
